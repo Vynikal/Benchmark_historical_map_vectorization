@@ -1,0 +1,12 @@
+docker run -it --gpus all -v /mnt/d/Doktorat/wsl:/wsl benchmark
+apt install gdal-bin libgdal-dev libfreeimage3 geopandas
+pip install torch==1.8.1+cu111 torchvision==0.9.1+cu111 torchaudio==0.8.1 -f https://download.pytorch.org/whl/torch_stable.html
+pip install torch-scatter==2.0.6 -f https://data.pyg.org/whl/torch-1.8.1+cu111.html
+pip install timm einops
+cd loss/MBD_BAL/faster_MBD
+python setup.py build
+python setup.py install
+cd ../../path_loss
+python setup.py build
+python setup.py install
+export PYTHONPATH=/wsl/benchmark
