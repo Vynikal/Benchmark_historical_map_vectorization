@@ -39,15 +39,16 @@ def reconstruct_tiling_array(original_image_path, patches_images, w_size):
     return new_img
 
 
-def reconstruct_from_patches(patches_images, patch_size, step_size, image_size_2d, image_dtype):
-    '''Adjust to take patch images directly.
-    patch_size is the size of the tiles
-    step_size should be patch_size//2
-    image_size_2d is the size of the original image
-    image_dtype is the data type of the target image
-
-    Most of this could be guessed using an array of patches
-    (except step_size but, again, it should be should be patch_size//2)
+def reconstruct_from_patches(patches_images, patch_size, step_size, image_size_2d, image_dtype, patch_positions=None):
+    '''Reconstruct image from patches, placing them in their original positions
+    
+    Args:
+        patches_images: List of patch arrays
+        patch_size: Size of each patch
+        step_size: Step size between patches (usually patch_size//2)
+        image_size_2d: Original image dimensions (H,W) or (H,W,C)
+        image_dtype: Data type for output image
+        patch_positions: List of (row,col) positions for each patch. If None, assumes sequential filling
     '''
     i_h, i_w = np.array(image_size_2d[:2]) + (patch_size, patch_size)
     p_h = p_w = patch_size
@@ -58,16 +59,24 @@ def reconstruct_from_patches(patches_images, patch_size, step_size, image_size_2
 
     numrows = (i_h)//step_size-1
     numcols = (i_w)//step_size-1
-    expected_patches = numrows * numcols
-    if len(patches_images) != expected_patches:
-        raise ValueError(f"Expected {expected_patches} patches, got {len(patches_images)}")
 
     patch_offset = step_size//2
     patch_inner = p_h-step_size
-    for row in range(numrows):
-        for col in range(numcols):
-            tt = patches_images[row*numcols+col]
-            tt_roi = tt[patch_offset:-patch_offset,patch_offset:-patch_offset]
-            img[row*step_size:row*step_size+patch_inner,
-                col*step_size:col*step_size+patch_inner] = tt_roi # +1?? 
+
+    # If no positions provided, create position mapping
+    if patch_positions is None:
+        patch_positions = [(r,c) for r in range(numrows) for c in range(numcols)]
+    
+    # Validate number of positions matches patches
+    if len(patch_positions) != len(patches_images):
+        raise ValueError(f"Number of positions ({len(patch_positions)}) must match number of patches ({len(patches_images)})")
+
+    # Place each patch in its specified position
+    for patch, (row, col) in zip(patches_images, patch_positions):
+        if row >= numrows or col >= numcols:
+            continue
+        tt_roi = patch[patch_offset:-patch_offset, patch_offset:-patch_offset]
+        img[row*step_size:row*step_size+patch_inner,
+            col*step_size:col*step_size+patch_inner] = tt_roi
+
     return img[step_size//2:-(patch_size+step_size//2),step_size//2:-(patch_size+step_size//2),...]

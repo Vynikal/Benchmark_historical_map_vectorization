@@ -7,13 +7,24 @@ import argparse
 import pdb
 
 
-def generate_tiling(image_path, w_size):
+def generate_tiling(image_path, w_size, mask_path=None):
     # Generate tiling images
     win_size = w_size
     pad_px = win_size // 2
 
     # Read image
     in_img = np.array(Image.open(image_path))
+
+    msk_bg = None
+    if mask_path:
+        msk_bg = np.array(Image.open(mask_path))
+        if msk_bg is None:
+            raise ValueError(f"Mask file {mask_path} cannot be read")
+        if msk_bg.shape != in_img.shape[:2]:
+            raise ValueError(f"GT and mask shapes don't match: {in_img.shape[:2]} vs {msk_bg.shape}")
+        # Create boolean mask (0=masked)
+        msk_bg = msk_bg == 0
+
     if len(in_img.shape) == 2:
         img_pad = np.pad(in_img, [(pad_px,pad_px), (pad_px,pad_px)], 'edge')
         tiles = view_as_windows(img_pad, (win_size,win_size), step=pad_px)
@@ -21,21 +32,27 @@ def generate_tiling(image_path, w_size):
         img_pad = np.pad(in_img, [(pad_px,pad_px), (pad_px,pad_px), (0,0)], 'edge')
         tiles = view_as_windows(img_pad, (win_size,win_size,3), step=pad_px)
     tiles_lst = []
+    tile_positions = []  # Track positions of valid tiles
     for row in range(tiles.shape[0]):
         for col in range(tiles.shape[1]):
+            # Check mask if provided
+            if msk_bg is not None:
+                mask_tile = msk_bg[row*pad_px:row*pad_px+win_size, 
+                                 col*pad_px:col*pad_px+win_size]
+                # Skip tile if any part is masekd
+                masked_ratio = np.mean(mask_tile)
+                if masked_ratio > 0:
+                    continue
+                
             if len(in_img.shape) == 2:
                 tt = tiles[row, col, ...].copy()
             else:
                 tt = tiles[row, col, 0, ...].copy()
-            # If you want black boarder, set the value to 25 (Suggest not using balck boarder)
-            # bordersize=1005
-            # tt[:bordersize,:, 2] = 255
-            # tt[-bordersize:,:, 2] = 255
-            # tt[:,:bordersize, 2] = 255
-            # tt[:,-bordersize:, 2] = 255
-            # skio.imsave(os.path.join(save_image_path, f"t_r{row:02d}_c{col:02d}.jpg"), tt)
+            
             tiles_lst.append(tt)
-    return tiles_lst
+            tile_positions.append((row, col))  # Store position of valid tile
+            
+    return tiles_lst, tile_positions
 
 def main():
     parser = argparse.ArgumentParser(description='Create Tillings.')
