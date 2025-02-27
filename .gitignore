@@ -12,3 +12,10 @@ inference/verniquet_eval.sh
 model/unet_nl.py
 
 training/train_connet.py
+
+loss/MBD_BAL/*
+loss/path_loss/*
+*.pyc
+.vscode/launch.json
+*/PKG-INFO
+out.png
