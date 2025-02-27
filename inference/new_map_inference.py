@@ -1,7 +1,9 @@
 import sys
-sys.path.insert(1, '../')
-
 import os
+current = os.path.dirname(os.path.realpath(__file__))
+parent = os.path.dirname(current)
+sys.path.append(parent)
+
 import numpy as np
 import torch
 import argparse
@@ -84,8 +86,8 @@ def test(model, win_size, args):
 
 
 def meyer_watershed(image_path, dynamic, area, output_path, out_visu_path):
-    print('../watershed/histmapseg/build/bin/histmapseg {} {} {} {} {}'.format(image_path, int(dynamic), int(area), output_path, out_visu_path))
-    os.system('../watershed/histmapseg/build/bin/histmapseg {} {} {} {} {}'.format(image_path, int(dynamic), int(area), output_path, out_visu_path))
+    print('watershed/histmapseg/build/bin/histmapseg {} {} {} {} {}'.format(image_path, int(dynamic), int(area), output_path, out_visu_path))
+    os.system('watershed/histmapseg/build/bin/histmapseg {} {} {} {} {}'.format(image_path, int(dynamic), int(area), output_path, out_visu_path))
 
 def main():
     args = parse_args()
@@ -162,6 +164,9 @@ def main():
 
     pad_px = win_size // 2
     new_img = reconstruct_from_patches(patches_images_ws, win_size, pad_px, in_img.shape, np.float32)
+
+    if args.invert_label_map:
+        new_img = 1/new_img
 
     new_img_ws = (new_img*255).astype(np.uint8)
     cv2.imwrite(tile_save_image_path, new_img_ws)
@@ -263,17 +268,17 @@ def parse_args():
                         help='Seed control.')
     parser.add_argument('--model_type', type=str, default='unet',
                         help='The type of the model')
-    parser.add_argument('--unseen', action='store_true',
+    parser.add_argument('--unseen', action='store_true', default=True,
                         help='Unseen dataset')
     parser.add_argument('--vectorization', action='store_true',
                         help='Vectorization the maps')
 
-    parser.add_argument('-c', '--cuda', action='store_true',
+    parser.add_argument('-c', '--cuda', action='store_true', default=True,
                         help='whether use gpu to train network')
     parser.add_argument('-g', '--gpu', type=str, default='0',
                         help='the gpu id to train net')
-    parser.add_argument('-m', '--model', type=str,
-                        default=None, help='the model to test')
+    parser.add_argument('-m', '--model', type=str, default='../training_info/kameny/unet/2025-02-21_19-30-22_lr_0.0001_train_unet_bs_4_aug_ctr+aff/params/topo_best_val_99.pth',
+                        help='the model to test')
 
     parser.add_argument('--channels', type=int, default=3,
                         help='number of channels for unet')
@@ -294,9 +299,12 @@ def parse_args():
     parser.add_argument('--mu', type=float, default=10,
 						help='loss coeff for vgg features')
 
-    parser.add_argument('--input_map_path', type=str,
-                        default='', help='Input map image.')
-
+    parser.add_argument('--input_map_path', type=str, default='dataset/B_raster.tif',
+                        help='Input map image.')
+    
+    parser.add_argument('--invert_label_map', action='store_true', default=False,
+                        help='use negative pixels')
+    
     return parser.parse_args()
 
 

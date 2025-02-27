@@ -6,8 +6,8 @@ from evaluation.all_eval.topo_eval.t_eval import eval_betti
 def evaluation(pred, gt, pred_ws):
     print('Pixel evaluation.')
     # Calculate correct, complete and quality
-    gt_bool   = (gt > 0.5).astype(np.bool)
-    pred_bool = (pred > 0.5).astype(np.bool)
+    gt_bool   = (gt > 0.5).astype(bool)
+    pred_bool = (pred > 0.5).astype(bool)
     corr, comp, qual, TP_g, TP_p, FN, FP = corr_comp_qual(gt_bool, pred_bool, slack=8)
     print('Correct, complete and quality: {}, {}, {}'.format(round(corr*100, 2), round(comp*100, 2), round(qual*100, 2)))
 

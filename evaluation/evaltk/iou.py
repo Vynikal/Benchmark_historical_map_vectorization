@@ -213,8 +213,8 @@ def mask_label_image(labels: np.ndarray, bg_mask: np.ndarray, bg_label: int = 0)
         raise ValueError(f"Expected same shapes for `labels` and `bg_mask`, "
             f"but got labels.shape={labels.shape} and bg_mask.shape={bg_mask.shape}. "
             "Please check the input images match." )
-    if bg_mask.dtype != np.bool:
-        bg_mask = bg_mask.astype(np.bool)
+    if bg_mask.dtype != bool:
+        bg_mask = bg_mask.astype(bool)
 
     # Create a new masked label map
     labels_renumbered = labels.copy()

@@ -3,9 +3,14 @@ import numpy as np
 import argparse
 import time
 import os
+import sys
 import cv2
 import skimage.morphology
 from pathlib import Path
+
+current = os.path.dirname(os.path.realpath(__file__))
+parent = os.path.dirname(current)
+sys.path.append(parent)
 
 from evaluation.eval_shape_detection import shape_detection
 
@@ -37,8 +42,8 @@ def tif2png(file_dir):
     return save_dir
 
 def meyer_watershed(image_path, dynamic, area, output_path, out_visu_path):
-    print('./histmapseg/build/bin/histmapseg {} {} {} {} {}'.format(image_path, int(dynamic), int(area), output_path, out_visu_path))
-    os.system('./histmapseg/build/bin/histmapseg {} {} {} {} {}'.format(image_path, int(dynamic), int(area), output_path, out_visu_path))
+    print('./watershed/histmapseg/build/bin/histmapseg {} {} {} {} {}'.format(image_path, int(dynamic), int(area), output_path, out_visu_path))
+    os.system('./watershed/histmapseg/build/bin/histmapseg {} {} {} {} {}'.format(image_path, int(dynamic), int(area), output_path, out_visu_path))
 
 def save_label_maps(labels, output_path, model, mode, file_name, attribute, name):
     output_dir = os.path.join(output_path, model, mode, attribute, name)
@@ -87,6 +92,8 @@ if __name__ == '__main__':
         AUC_THRESHOLD_DEFAULT = 0.5
         parser = argparse.ArgumentParser(description='Benchmark evaluaion')
 
+        parser.add_argument('--image_dir', type=str, default='../training_info/Vltava_SMO/unet/2025-01-23_20-30-50_lr_0.0001_train_unet_bs_4_aug_ctr+aff/reconstruction_png',
+            help='The input path of the image')
         ABS_PATH = Path(parser.parse_args().image_dir).parent
         parser.add_argument('--output_path', type=str, default=r'{}/label_maps_cc_labelling/'.format(ABS_PATH),
             help='The output path of the image')
@@ -97,14 +104,10 @@ if __name__ == '__main__':
         parser.add_argument('--auc-threshold', type=float,
             help='Threshold value (float) for AUC: 0.5 <= t < 1.'f' Default={AUC_THRESHOLD_DEFAULT}', default=AUC_THRESHOLD_DEFAULT)
 
-        parser.add_argument('--image_dir', type=str, default=r'/lrde/work/ychen/PRL/benchmark_DL/unet_original/HistoricalMap2020/UNET/2022-03-03_20:15:02_lr_0.0001_train_unet_orign_bs_1/reconstruction',
-            help='The input path of the image')
-        parser.add_argument('--gt_path', type=str, default=r'/lrde/work/ychen/PRL/benchmark_mws/gt_label_path/gt_label_map.png',
+        parser.add_argument('--gt_path', type=str, default='dataset/raster_val_GT.png',
             help='The ground truth of the label path')
-        parser.add_argument('--validation_mask', type=str, default=r'/lrde/image/CV_2021_yizi/historical_map_2020/img_gt/BHdV_PL_ATL20Ardt_1926_0004-VAL-MASK_content.png',
+        parser.add_argument('--validation_mask', type=str, default=None,
             help='Validation mask to evaluate the results')
-        parser.add_argument('--gt_label_path', type=str, default='/lrde/work/ychen/code_for_ICDAR/ICDAR_paper/icdar21-paper-map-object-seg/data_generator/img_gt/BHdV_PL_ATL20Ardt_1926_0004-VAL-GT_LABELS_target.png',
-            help='the gt label path')
         return parser.parse_args()
     print('##########################  GRID SEARCH VALIDATION  ##################################')
     start = time.time()

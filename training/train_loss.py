@@ -1,7 +1,10 @@
 import sys
-sys.path.insert(1, '../')
-
 import os
+current = os.path.dirname(os.path.realpath(__file__))
+parent = os.path.dirname(current)
+sys.path.append(parent)
+
+from pathlib import Path
 import numpy as np
 import torch
 from torch import optim
@@ -17,10 +20,10 @@ import cv2
 from data.smart_data_loader import Data
 
 # Import config
-import config.cfg as cfg
+# import config.cfg as cfg
 
 # Import model
-from model.unet import unet
+from model.unet import UNET as unet
 from model.hed import hed
 from model.bdcn import bdcn
 from model.segmenter.factory import create_segmenter
@@ -78,7 +81,7 @@ def train(args):
         model = model.cuda()
         vggnet = VGGNet(args.vgg, args.layers)
         model = mosin(model, vggnet, args)
-        pretrain_path = '/lrde/work/ychen/PRL/benchmark_DL/unet_original/HistoricalMap2020/mosin_unet/2022-04-20_23:28:32_lr_0.0001_train_unet_orign_bs_1/params/topo_best_val_11.pth'
+        pretrain_path = args.pretrain
         pretrain_weight = torch.load(pretrain_path)
         for index, key in enumerate(list(pretrain_weight.keys())):
             if key.split('.')[0] == 'UNet':
@@ -102,16 +105,19 @@ def train(args):
     else:
         data_aug_stat = 'no_aug'
 
-    train_img_path = '/lrde/work/ychen/code_for_ICDAR/ICDAR_paper/icdar21-paper-map-object-seg/data_generator/img_gt/BHdV_PL_ATL20Ardt_1926_0004-TRAIN-INPUT_color_border.jpg'
-    train_gt_path  = '/lrde/work/ychen/code_for_ICDAR/ICDAR_paper/icdar21-paper-map-object-seg/data_generator/img_gt/BHdV_PL_ATL20Ardt_1926_0004-TRAIN-EDGE_target.png'
-    train_img = Data(train_img_path, train_gt_path, w_size, args.data_aug, aug_mode=aug_mode, dilation=True, mode='loss')
+    train_img_path = 'dataset/B_raster.tif'
+    train_gt_path  = 'dataset/B_GT.tif'
+    train_mask_path = 'dataset/B_mask.tif'
+    train_img = Data(train_img_path, train_gt_path, w_size, args.data_aug, aug_mode=aug_mode, dilation=True, mode='loss', mask_path=None)
     trainloader = torch.utils.data.DataLoader(train_img, batch_size=args.batch_size, shuffle=True, num_workers=0, pin_memory=True) # WARNING: SHUFFLE MUST BE TRUE TO PREVENT HUGE OVERFIT
     n_train = len(trainloader)
 
     # Validation evaluation
-    val_img_path = '/lrde/work/ychen/code_for_ICDAR/ICDAR_paper/icdar21-paper-map-object-seg/data_generator/img_gt/BHdV_PL_ATL20Ardt_1926_0004-VAL-INPUT_color_border.jpg'
-    val_gt_path  = '/lrde/work/ychen/code_for_ICDAR/ICDAR_paper/icdar21-paper-map-object-seg/data_generator/img_gt/BHdV_PL_ATL20Ardt_1926_0004-VAL-EDGE_target.png'
-    val_img = Data(val_img_path, val_gt_path, w_size, data_aug=None, dilation=True, mode='loss')
+    val_img_path = 'dataset/A_raster_clip2.tif'
+    val_gt_path  = 'dataset/A_GT_clip2.tif'
+    val_mask_path = 'dataset/A_mask_clip2.tif'
+    val_img = Data(val_img_path, val_gt_path, w_size, data_aug=None, dilation=True, mode='loss', mask_path=None)
+    val_img_pos = val_img.get_patch_positions()
     valloader = torch.utils.data.DataLoader(val_img, batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=True)
     n_val = len(valloader)
 
@@ -137,7 +143,7 @@ def train(args):
         loss_type = 'train_{}'.format(model_name) + '_bs_'+ str(args.batch_size)
 
         # Create res directory
-        res_dir = os.path.join(args.res_dir + args.dataset, model_name, str(datetime.datetime.now()).replace(' ', '_').split('.')[0] + '_lr_' + str(args.base_lr)) + '_' + loss_type + '_' + data_aug_stat
+        res_dir = os.path.join(args.res_dir + args.dataset, model_name, str(datetime.datetime.now()).replace(' ', '_').replace(':', '-').split('.')[0] + '_lr_' + str(args.base_lr)) + '_' + loss_type + '_' + data_aug_stat
         print('Model save in {}'.format(res_dir))
 
         if not os.path.exists(res_dir):
@@ -168,7 +174,8 @@ def train(args):
         mean_bce_loss= []
         mean_topo_loss = []
         with tqdm(total=int(n_train*args.batch_size)-1, desc=f'Epoch {epoch + 1}/{epochs}', unit='img', bar_format='{desc:<5.5}{percentage:3.0f}%|{bar:10}{r_bar}') as pbar:
-            for i, (img, labels, seeds) in enumerate(trainloader):
+            for i, (img, labels) in enumerate(trainloader):
+                labels, seeds = labels['labels'], labels['seeds']
                 # Set the gradient in the model into 0
                 optimizer.zero_grad()
 
@@ -212,7 +219,11 @@ def train(args):
                         seeds_tmp = seeds[b]
                         topo_loss += args.alpha * Path_loss(out_tmp, seeds_tmp, labels_tmp)
                 else:
+                    topo_loss = torch.Tensor([0])
                     pass
+                
+                if args.cuda:
+                    topo_loss = topo_loss.cuda()
 
                 total_loss = bce_loss + topo_loss
 
@@ -239,8 +250,18 @@ def train(args):
         val_mean_loss = []
         val_mean_bce_loss = []
         val_mean_topo_loss = []
+
+        # Before the loop
+        total_imgs = len(valloader.dataset)  # Total number of patches
+        fuse_shape = out.shape[2:]  # Get spatial dimensions (H,W)
+        patches_images_ws = np.zeros((total_imgs, *fuse_shape))  # Preallocate array
+
+        # Modified loop with direct indexing
+        global_idx = 0
         with tqdm(total=int(n_val*args.batch_size)-1, desc=f'Epoch {epoch + 1}/{epochs}', unit='img', bar_format='{desc:<5.5}{percentage:3.0f}%|{bar:10}{r_bar}') as pbar:
-            for i, (val_img, val_labels, val_seeds) in enumerate(valloader):
+            for i, (val_img, val_labels) in enumerate(valloader):
+                val_labels, val_seeds = val_labels['labels'], val_labels['seeds']
+
                 if args.cuda:
                     val_img, val_labels, val_seeds  = val_img.cuda(), val_labels.cuda(), val_seeds.cuda()
 
@@ -281,17 +302,18 @@ def train(args):
                         val_seeds_tmp = val_seeds[b].unsqueeze(0)
                         val_topo_loss += args.alpha * Path_loss(val_out_tmp, val_seeds_tmp, val_labels_tmp)
                 else:
+                    val_topo_loss = torch.Tensor([0])
                     pass
+
+                if args.cuda:
+                    val_topo_loss = val_topo_loss.cuda()
 
                 val_out = torch.sigmoid(val_out)
                 batch, _, _, _ = val_out.shape
-                for index, b in enumerate(range(batch)):
-                    fuse_ws = (val_out[b, ...]).cpu().numpy()[0,...]
-
-                    if i == 0 and index == 0:
-                        patches_images_ws = fuse_ws[np.newaxis,...]
-                    else:
-                        patches_images_ws = np.concatenate((patches_images_ws, fuse_ws[np.newaxis,...]), axis=0) # (1, 500, 500)
+                for b in range(batch):
+                    fuse_ws = val_out[b, ...].cpu().numpy()[0,...]
+                    patches_images_ws[global_idx] = fuse_ws
+                    global_idx += 1
 
                 val_total_loss = val_bce_loss + val_topo_loss
 
@@ -318,14 +340,14 @@ def train(args):
                         )
                     )
 
-        in_img = cv2.imread(args.val_original_image_path)
+        in_img = cv2.imread(val_img_path)
         pad_px = w_size // 2
-        new_img = reconstruct_from_patches(patches_images_ws, w_size, pad_px, in_img.shape, np.float32)
+        new_img = reconstruct_from_patches(patches_images_ws, w_size, pad_px, in_img.shape, np.float32, val_img_pos)
         tile_save_image_path_ws = os.path.join('.', recon_save_path, str(epoch) + '_{}_reconstruct.png'.format(int(np.array(val_mean_loss))))
 
         new_img = (new_img*255).astype(np.uint8)
-        BOD = cv2.imread(args.val_EPM_border, 0)
-        new_img[BOD == 255] = 255
+        # BOD = cv2.imread(args.val_EPM_border, 0)
+        # new_img[BOD == 255] = 255
 
         cv2.imwrite(tile_save_image_path_ws, new_img)
         torch.save(model.state_dict(), '{}/topo_best_val_{}.pth'.format(parm_save_path, str(epoch)))  # Save best weight
@@ -357,7 +379,7 @@ def parse_args():
 
     parser = argparse.ArgumentParser(
         description='Train leakage-loss for different args')
-    parser.add_argument('-p', '--pretrain', type=path_exists, default='../pretrain_weight/unet_best_pretrain.pth',
+    parser.add_argument('-p', '--pretrain', type=path_exists, default=None,#'../training_info/Vltava_SMO/unet/2025-02-07_11-22-04_lr_0.0001_train_unet_bs_4_aug_ctr+aff_hard_thindilate/params/topo_best_val_49.pth',
         help='init net from pretrained model default is None')
     parser.add_argument('-l', '--log', type=str, default='log.txt',
                         help='the file to store log, default is log.txt')
@@ -365,23 +387,23 @@ def parse_args():
                         help='The type of the model')
     parser.add_argument('--topo_loss_type', type=str, default=None,
                         help='The type of the model')
-    parser.add_argument('--alpha', type=float, default=0.01,
+    parser.add_argument('--alpha', type=float, default=50,
                         help='the alpha')
-    parser.add_argument('-d', '--dataset', type=str, choices=cfg.config_BAL_train.keys(),
-                        default='HistoricalMap2020', help='The dataset to train')
+    parser.add_argument('-d', '--dataset', type=str, #choices=cfg.config_BAL_train.keys(),
+                        default='Vltava_SMO', help='The dataset to train')
     parser.add_argument('--seed', type=int, default=50,
                         help='Seed control.')
     parser.add_argument('--param_dir', type=str, default='params',
                         help='the directory to store the params')
     parser.add_argument('--lr', dest='base_lr', type=float, default=1e-4,
                         help='the base learning rate of model')
-    parser.add_argument('-m', '--momentum', type=float, default=0.9,
-                        help='the momentum')
-    parser.add_argument('-c', '--cuda', action='store_true',
+    # parser.add_argument('-m', '--momentum', type=float, default=0.9,
+    #                     help='the momentum')
+    parser.add_argument('-c', '--cuda', action='store_true', default=True,
                         help='whether use gpu to train network')
-    parser.add_argument('--data_aug', action='store_true',
+    parser.add_argument('--data_aug', action='store_true', default=True,
                         help='Augmentation the data or not')
-    parser.add_argument('--data_aug_mode', type=str, default='bri+aff',
+    parser.add_argument('--data_aug_mode', type=str, default='ctr+aff',
                         help='Augmentation mode')
     parser.add_argument('-g', '--gpu', type=str, default='0',
                         help='the gpu id to train net')
@@ -393,46 +415,46 @@ def parse_args():
                         help='Pre-load model')
     parser.add_argument('--epochs', type=int, default=50,
                         help='Epoch to train network, default is 100')
-    parser.add_argument('--max-iter', type=int, default=40000,
-                        help='max iters to train network, default is 40000')
-    parser.add_argument('--iter-size', type=int, default=10,
-                        help='iter size equal to the batch size, default 10')
-    parser.add_argument('--average-loss', type=int, default=50,
-                        help='smoothed loss, default is 50')
-    parser.add_argument('-s', '--snapshots', type=int, default=1,
-                        help='how many iters to store the params, default is 1000')
-    parser.add_argument('--step-size', type=int, default=50,
-                        help='the number of iters to decrease the learning rate, default is 50')
-    parser.add_argument('-b', '--balance', type=float, default=1.1,
-                        help='the parameter to balance the neg and pos, default is 1.1')
-    parser.add_argument('-k', type=int, default=1,
-                        help='the k-th split set of multicue')
-    parser.add_argument('--batch-size', type=int, default=2,
+    # parser.add_argument('--max-iter', type=int, default=40000,
+    #                     help='max iters to train network, default is 40000')
+    # parser.add_argument('--iter-size', type=int, default=10,
+    #                     help='iter size equal to the batch size, default 10')
+    # parser.add_argument('--average-loss', type=int, default=50,
+    #                     help='smoothed loss, default is 50')
+    # parser.add_argument('-s', '--snapshots', type=int, default=1,
+    #                     help='how many iters to store the params, default is 1000')
+    # parser.add_argument('--step-size', type=int, default=50,
+    #                     help='the number of iters to decrease the learning rate, default is 50')
+    # parser.add_argument('-b', '--balance', type=float, default=1.1,
+    #                     help='the parameter to balance the neg and pos, default is 1.1')
+    # parser.add_argument('-k', type=int, default=1,
+    #                     help='the k-th split set of multicue')
+    parser.add_argument('--batch-size', type=int, default=4,
                         help='batch size of one iteration, default 1')
-    parser.add_argument('--crop-size', type=int, default=None,
-                        help='the size of image to crop, default not crop')
-    parser.add_argument('--complete-pretrain', type=str, default=None,
-                        help='finetune on the complete_pretrain, default None')
+    # parser.add_argument('--crop-size', type=int, default=None,
+    #                     help='the size of image to crop, default not crop')
+    # parser.add_argument('--complete-pretrain', type=str, default=None,
+    #                     help='finetune on the complete_pretrain, default None')
     parser.add_argument('--side-weight', type=float, default=0.5,
                         help='the loss weight of sideout, default 0.5')
     parser.add_argument('--fuse-weight', type=float, default=1.1,
                         help='the loss weight of fuse, default 1.1')
-    parser.add_argument('--gamma', type=float, default=0.1,
-                        help='the decay of learning rate, default 0.1')
+    # parser.add_argument('--gamma', type=float, default=0.1,
+    #                     help='the decay of learning rate, default 0.1')
     parser.add_argument('--channels', type=int, default=3,
                         help='number of channels for unet')
     parser.add_argument('--classes', type=int, default=1,
                         help='number of classes in the output')
     parser.add_argument('--res_dir', type=str, default='../training_info/',
                         help='the dir to store result')
-    parser.add_argument('--auc-threshold', type=float,
-                        help='Threshold value (float) for AUC: 0.5 <= t < 1.'f' Default={AUC_THRESHOLD_DEFAULT}', default=AUC_THRESHOLD_DEFAULT)
-    parser.add_argument('--EPM_threshold', type=int, default=0.5,
-                        help='Threshold to create binary image of EPM')
-    parser.add_argument('--validation_mask', type=str, default=r'/lrde/image/CV_2021_yizi/historical_map_2020/img_gt/BHdV_PL_ATL20Ardt_1926_0004-VAL-MASK_content.png',
-                        help='Validation mask to evaluate the results')
-    parser.add_argument('--val_original_image_path', type=str,
-                        default=r'/lrde/work/ychen/code_for_ICDAR/ICDAR_paper/icdar21-paper-map-object-seg/data_generator/img_gt/BHdV_PL_ATL20Ardt_1926_0004-VAL-INPUT_color_border.jpg', help='Validation image')
+    # parser.add_argument('--auc-threshold', type=float,
+    #                     help='Threshold value (float) for AUC: 0.5 <= t < 1.'f' Default={AUC_THRESHOLD_DEFAULT}', default=AUC_THRESHOLD_DEFAULT)
+    # parser.add_argument('--EPM_threshold', type=int, default=0.5,
+    #                     help='Threshold to create binary image of EPM')
+    # parser.add_argument('--validation_mask', type=str, default=r'/lrde/image/CV_2021_yizi/historical_map_2020/img_gt/BHdV_PL_ATL20Ardt_1926_0004-VAL-MASK_content.png',
+    #                     help='Validation mask to evaluate the results')
+    # parser.add_argument('--val_original_image_path', type=str,
+    #                     default=r'/lrde/work/ychen/code_for_ICDAR/ICDAR_paper/icdar21-paper-map-object-seg/data_generator/img_gt/BHdV_PL_ATL20Ardt_1926_0004-VAL-INPUT_color_border.jpg', help='Validation image')
     parser.add_argument('--val_EPM_border', type=str,
                         default=r'/lrde/work/ychen/code_for_ICDAR/ICDAR_paper/icdar21-paper-map-object-seg/data_generator/epm_mask/BHdV_PL_ATL20Ardt_1926_0004-VAL-EPM-BORDER-MASK_content.png')
     parser.add_argument('--val_gt_path', type=str, default=r'/lrde/home2/ychen/deep_watershed/new_image_gt/BHdV_PL_ATL20Ardt_1926_0004-VAL-GT_LABELS_target.png',

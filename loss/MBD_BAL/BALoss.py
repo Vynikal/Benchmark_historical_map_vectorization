@@ -14,7 +14,7 @@ def boundary_awareness_loss(inputs, seed, label):
     EPM_s_clone = (EPM_s_clone*255).squeeze().detach().cpu().numpy().astype(np.uint8)
 
     seed = np.array(seed.squeeze().detach().cpu().numpy()).astype(np.int32)
-    print(np.unique(seed))
+    # print(np.unique(seed))
     saddle = MBD.geodesic_saddle(EPM_s_clone,seed)
     saddle = (saddle/255).astype(np.uint8)
     saddle = torch.from_numpy(np.array([saddle])).cuda()

@@ -1,6 +1,7 @@
 import numpy as np
 from skimage.util import view_as_windows
 from PIL import Image
+Image.MAX_IMAGE_PIXELS = None
 import argparse
 
 import pdb

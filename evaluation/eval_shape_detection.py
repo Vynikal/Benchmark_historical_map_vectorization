@@ -8,6 +8,7 @@ import json
 import numpy as np
 import sys
 from PIL import Image
+Image.MAX_IMAGE_PIXELS = None
 
 from evaluation import evaltk
 
@@ -68,6 +69,8 @@ def shape_detection(input_gt_path, input_contenders_path, output_dir, iou_thresh
 
     # Load mask image
     msk_bg = None
+    border_width = 10
+    
     if input_mask:
         msk_bg = np.array(Image.open(input_mask))
         if msk_bg is None:
@@ -76,6 +79,13 @@ def shape_detection(input_gt_path, input_contenders_path, output_dir, iou_thresh
             raise ValueError("GT and MASK image do not have the same shapes: {} vs {}", ref.shape, msk_bg.shape)
         # Create boolean mask
         msk_bg = msk_bg==0
+    else:
+        # Create border mask
+        msk_bg = np.ones(ref.shape, dtype=bool)
+        msk_bg[:border_width,:] = 0  # Top
+        msk_bg[-border_width:,:] = 0 # Bottom
+        msk_bg[:,:border_width] = 0  # Left
+        msk_bg[:,-border_width:] = 0 # Right
 
     # Mask input image if needed
     if msk_bg is not None:

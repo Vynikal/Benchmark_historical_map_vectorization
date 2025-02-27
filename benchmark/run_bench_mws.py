@@ -1,9 +1,12 @@
 # Run Benchmark
 import sys
-sys.path.insert(1, '../')
-
-import numpy as np
 import os
+current = os.path.dirname(os.path.realpath(__file__))
+parent = os.path.dirname(current)
+sys.path.append(parent)
+
+from natsort import natsorted
+import numpy as np
 import cv2
 import time
 
@@ -38,8 +41,8 @@ def tif2png(file_dir, EPM_border_file):
     return save_dir
 
 def meyer_watershed(image_path, dynamic, area, output_path, out_visu_path):
-    print('../watershed/build/bin/histmapseg {} {} {} {} {}'.format(image_path, int(dynamic), int(area), output_path, out_visu_path))
-    os.system('../watershed/build/bin/histmapseg {} {} {} {} {}'.format(image_path, int(dynamic), int(area), output_path, out_visu_path))
+    print('./watershed/histmapseg/build/bin/histmapseg {} {} {} {} {}'.format(image_path, int(dynamic), int(area), output_path, out_visu_path))
+    os.system('./watershed/histmapseg/build/bin/histmapseg {} {} {} {} {}'.format(image_path, int(dynamic), int(area), output_path, out_visu_path))
 
 def save_label_maps(labels, output_path, model, mode, file_name, attribute, name):
     output_dir = os.path.join(output_path, model, mode, attribute, name)
@@ -95,7 +98,7 @@ if __name__ == '__main__':
         parser = argparse.ArgumentParser(description='Benchmark evaluaion')
         parser.add_argument('--dataset', type=str, default='hist',
             help='Types of dataset')
-        parser.add_argument('--image_dir', type=str, default=r'/lrde/home2/ychen/release_code/release_code/training_info_ambiguous/HistoricalMap2020/unet/2022-11-27_17:36:05_lr_0.0001_train_unet_bs_1_no_aug_baseline/reconstruction_png',
+        parser.add_argument('--image_dir', type=str, default='../training_info/Vltava_SMO/unet/2025-01-23_20-30-50_lr_0.0001_train_unet_bs_4_aug_ctr+aff/reconstruction_png',
             help='The input path of the image')
 
         parser.add_argument('--last_epoch', type=int, default=50,
@@ -107,16 +110,13 @@ if __name__ == '__main__':
             help='Save contender path')
         parser.add_argument('--output_dir', type=str, default=r'{}/eval_folder_new_mws/'.format(ABS_PATH),
             help='Save evaluation path')
-        parser.add_argument('--gt_path', type=str, default=r'/lrde/work/ychen/PRL/benchmark_mws/gt_label_path/gt_label_map.png'.format(ABS_PATH),
+        parser.add_argument('--gt_path', type=str, default=r'dataset/raster_test_GT.png'.format(ABS_PATH),
             help='The ground truth of the label path')
         parser.add_argument('--auc-threshold', type=float,
             help='Threshold value (float) for AUC: 0.5 <= t < 1.'f' Default={AUC_THRESHOLD_DEFAULT}', default=AUC_THRESHOLD_DEFAULT)
 
-
-        parser.add_argument('--validation_mask', type=str, default=r'/lrde/image/CV_2021_yizi/historical_map_2020/img_gt/BHdV_PL_ATL20Ardt_1926_0004-VAL-MASK_content.png',
+        parser.add_argument('--validation_mask', type=str, default=None, #r'dataset/BHdV_PL_ATL20Ardt_1926_0004-VAL-MASK_content.png',
             help='Validation mask to evaluate the results')
-        parser.add_argument('--gt_label_path', type=str, default='/lrde/work/ychen/code_for_ICDAR/ICDAR_paper/icdar21-paper-map-object-seg/data_generator/img_gt/BHdV_PL_ATL20Ardt_1926_0004-VAL-GT_LABELS_target.png',
-            help='the gt label path')
         parser.add_argument('--EPM_border', type=str, default=r'/lrde/work/ychen/code_for_ICDAR/ICDAR_paper/icdar21-paper-map-object-seg/data_generator/epm_mask/BHdV_PL_ATL20Ardt_1926_0004-VAL-EPM-BORDER-MASK_content.png',      help='The mask of the EPM_border')
         return parser.parse_args()
 
@@ -133,9 +133,9 @@ if __name__ == '__main__':
     analysis_last_epoch = args.last_epoch
 
     save_dir = tif2png(args.image_dir, args.EPM_border)
-    image_lst = os.listdir(save_dir)[:analysis_last_epoch]
+    image_lst = natsorted(os.listdir(save_dir)[:analysis_last_epoch])
     image_lst = image_lst[::analysis_range]
-    image_lst.append(os.listdir(save_dir)[-1]) # Append the last file path
+    # image_lst.append(os.listdir(save_dir)[-1]) # Append the last file path
 
     best_parm_lst = []
     best_coco_lst = []
@@ -159,6 +159,7 @@ if __name__ == '__main__':
     print('Best epoch              : index    {}'.format(best_param))
     print('Best COCO parm          : PQ       {}, RQ   {}, SQ {}'.format(best_coco, best_sq, best_rq))
     print('Best attribute setting  : Dynamics {}, Area {}'.format(int(best_dynamics), int(best_area)))
+    # for Paris reproduced: epoch 14(15), dyn 9, area 100
 
     # Save information
     dict_1 = {'best_coco_lst': best_coco_lst, 'full_coco_lst': full_cooo_lst}

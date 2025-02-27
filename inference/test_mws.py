@@ -333,7 +333,7 @@ def sal_2_polygon(img, vector_path, res_dir, dp_tol=2):
 
 def parse_args():
     parser = argparse.ArgumentParser('Test UNET')
-    parser.add_argument('--dataset', type=str, default='verniquet',
+    parser.add_argument('--dataset', type=str, default='atlas_municipal',
                         help='The type dataset')
     parser.add_argument('--seed', type=int, default=50,
                         help='Seed control.')
