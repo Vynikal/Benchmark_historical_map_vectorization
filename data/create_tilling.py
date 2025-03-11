@@ -22,8 +22,10 @@ def generate_tiling(image_path, w_size, mask_path=None):
             raise ValueError(f"Mask file {mask_path} cannot be read")
         if msk_bg.shape != in_img.shape[:2]:
             raise ValueError(f"GT and mask shapes don't match: {in_img.shape[:2]} vs {msk_bg.shape}")
-        # Create boolean mask (0=masked)
+        # Create boolean mask (0=masked) and pad it same as image
         msk_bg = msk_bg == 0
+        msk_bg = np.pad(msk_bg, [(pad_px,pad_px), (pad_px,pad_px)], 'edge')
+        mask_tiles = view_as_windows(msk_bg, (win_size,win_size), step=pad_px) if msk_bg is not None else None
 
     if len(in_img.shape) == 2:
         img_pad = np.pad(in_img, [(pad_px,pad_px), (pad_px,pad_px)], 'edge')
@@ -36,10 +38,9 @@ def generate_tiling(image_path, w_size, mask_path=None):
     for row in range(tiles.shape[0]):
         for col in range(tiles.shape[1]):
             # Check mask if provided
-            if msk_bg is not None:
-                mask_tile = msk_bg[row*pad_px:row*pad_px+win_size, 
-                                 col*pad_px:col*pad_px+win_size]
-                # Skip tile if any part is masekd
+            if mask_tiles is not None:
+                mask_tile = mask_tiles[row, col]
+                # Skip tile if any part is masked
                 masked_ratio = np.mean(mask_tile)
                 if masked_ratio > 0:
                     continue
