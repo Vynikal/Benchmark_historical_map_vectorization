@@ -80,3 +80,41 @@ def reconstruct_from_patches(patches_images, patch_size, step_size, image_size_2
             col*step_size:col*step_size+patch_inner] = tt_roi
 
     return img[step_size//2:-(patch_size+step_size//2),step_size//2:-(patch_size+step_size//2),...]
+
+def save_random_chips(dataset, save_path, prefix, num_chips=5):
+    """Save random chips from a dataset
+    
+    Args:
+        dataset: Data instance from smart_data_loader
+        save_path: Directory to save chips
+        prefix: Prefix for saved files (e.g. 'train' or 'val')
+        num_chips: Number of random chips to save
+    """
+    import random
+    import cv2
+    import os
+    
+    # Get random indices
+    indices = random.sample(range(len(dataset)), num_chips)
+    
+    for i, idx in enumerate(indices):
+        if dataset.unseen:
+            img, pos = dataset[idx]
+            # Convert from tensor to numpy
+            img = img.numpy().transpose(1,2,0) * 255
+            img = img.astype(np.uint8)
+            cv2.imwrite(os.path.join(save_path, f'{prefix}_chip_{i}_r{pos[0]}_c{pos[1]}.png'), img)
+        else:
+            img, labels = dataset[idx]
+            # Convert from tensor to numpy
+            img = img.numpy().transpose(1,2,0) * 255
+            img = img.astype(np.uint8)
+            if isinstance(labels, dict):
+                labels = labels['labels'].numpy()[0] * 255
+            else:
+                labels = labels.numpy()[0] * 255
+            labels = labels.astype(np.uint8)
+            
+            # Save both image and label
+            cv2.imwrite(os.path.join(save_path, f'{prefix}_chip_{i}_img.png'), img)
+            cv2.imwrite(os.path.join(save_path, f'{prefix}_chip_{i}_gt.png'), labels)

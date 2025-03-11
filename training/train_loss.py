@@ -40,7 +40,7 @@ from loss.path_loss.p_loss import Path_loss
 
 # Import Utils
 from utils import log
-from utils.reconstruct_tiling_dict import reconstruct_from_patches
+from utils.reconstruct_tiling_dict import reconstruct_from_patches, save_random_chips
 
 
 def train(args):
@@ -162,6 +162,16 @@ def train(args):
         logger = log.get_logger(os.path.join(res_dir, '{}.txt'.format(args.model_type)))
 
         start_epoch = 0
+
+    # Create chips directory
+    chips_dir = os.path.join(res_dir, 'random_chips')
+    if not os.path.exists(chips_dir):
+        os.makedirs(chips_dir)
+
+    # Save random chips from both datasets
+    save_random_chips(train_img, chips_dir, 'train', num_chips=50)
+    save_random_chips(val_img, chips_dir, 'val', num_chips=20)
+
 
     epochs = args.epochs
     bce_loss = 0
