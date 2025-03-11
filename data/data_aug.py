@@ -6,7 +6,7 @@ import itertools
 
 
 def transformation(img, targets, mode):
-    if mode == 'ctr+aff' or mode == 'ctr+hom' or mode == 'ctr+tps':
+    if mode == 'ctr' or mode == 'ctr+aff' or mode == 'ctr+hom' or mode == 'ctr+tps':
         img = random_contrast(img)
 
     if mode == 'ctr+aff' or mode == 'aff':
@@ -16,7 +16,7 @@ def transformation(img, targets, mode):
     elif mode == 'ctr+tps' or mode == 'tps':
         img, targets = random_tps(img, targets)
     else:
-        assert mode == 'aff' or mode == 'hom' or mode == 'tps' or mode == 'ctr+aff' or mode == 'ctr+hom' or mode == 'ctr+tps'
+        assert mode == 'ctr' or mode == 'aff' or mode == 'hom' or mode == 'tps' or mode == 'ctr+aff' or mode == 'ctr+hom' or mode == 'ctr+tps'
     return img, targets
 
 def random_contrast(img, low=0.8, high=1.25, beta=0):
