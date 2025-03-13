@@ -47,11 +47,13 @@ def sigmoid(x):
 
 def test(model, win_size, args):
     input = args.input_map_path
+    test_mask_path = args.input_mask_path
     gt = None
 
     # args.unseen == True -> gt is None
-    test_img  = Data(input, gt, win_size, unseen=args.unseen)
-    testloader = torch.utils.data.DataLoader(test_img, batch_size=40, shuffle=False, num_workers=0, pin_memory=True)
+    test_img  = Data(input, gt, win_size, unseen=args.unseen, mask_path=test_mask_path)
+    test_img_pos = test_img.get_patch_positions()
+    testloader = torch.utils.data.DataLoader(test_img, batch_size=12, shuffle=False, num_workers=0, pin_memory=True)
 
     if args.cuda:
         model.to(args.device)
@@ -83,7 +85,7 @@ def test(model, win_size, args):
             patches_images_ws = fuse[:, 0,...]
         else:
             patches_images_ws = np.concatenate((patches_images_ws, fuse[:, 0,...]), axis=0)
-    return patches_images_ws
+    return patches_images_ws, test_img_pos
 
 
 def meyer_watershed(image_path, dynamic, area, output_path, out_visu_path):
@@ -102,14 +104,12 @@ def main():
         model = UNET(n_channels=args.channels, n_classes=args.classes)
         model.load_state_dict(torch.load('%s' % (args.model)))
         print('Load model {}'.format(args.model))
-        win_size = 500
-        patches_images_ws = test(model, win_size, args)
+        win_size = 512
     elif args.model_type == 'mini-unet':
         model = UNET(n_channels=args.channels, n_classes=args.classes, mode='mini')
         model.load_state_dict(torch.load('%s' % (args.model)))
         print('Load model {}'.format(args.model))
-        win_size = 500
-        patches_images_ws = test(model, win_size, args)
+        win_size = 512
     elif args.model_type == 'vit':
         def load_config():
             return yaml.load(open('../config/config.yml', 'r'), Loader=yaml.FullLoader)
@@ -120,7 +120,6 @@ def main():
         model.load_state_dict(pretrain_weight)
         print('Load model {}'.format(args.model))
         win_size = 256
-        patches_images_ws = test(model, win_size, args)
     elif args.model_type == 'mosin':
         model = UNET(n_channels=args.channels, n_classes=args.classes)
         vggnet = VGGNet(args.vgg, args.layers)
@@ -128,31 +127,28 @@ def main():
         model.load_state_dict(torch.load('%s' % (args.model)))
         print('Load model {}'.format(args.model))
         win_size = 500
-        patches_images_ws = test(model, win_size, args)
     elif args.model_type == 'pvt':
         model = pvt_2()
         model.load_state_dict(torch.load('%s' % (args.model)))
         print('Load model {}'.format(args.model))
         win_size = 256
-        patches_images_ws = test(model, win_size, args)
     elif args.model_type == 'hed' or args.model_type == 'hed_pretrain':
         model = hed(pretrain=None)
         model.load_state_dict(torch.load('%s' % (args.model)))
         print('Load model {}'.format(args.model))
         win_size = 500
-        patches_images_ws = test(model, win_size, args)
     elif args.model_type == 'bdcn' or args.model_type == 'bdcn_pretrain':
         model = bdcn(pretrain=None)
         model.load_state_dict(torch.load('%s' % (args.model)))
         print('Load model {}'.format(args.model))
         win_size = 500
-        patches_images_ws = test(model, win_size, args)
     elif args.model_type == 'dws':
         model = watershed_net_combine('Inference')
         model.load_state_dict(torch.load('%s' % (args.model)))
         print('Load model {}'.format(args.model))
         win_size = 500
-        patches_images_ws = test(model, win_size, args)
+
+    patches_images_ws, test_img_pos = test(model, win_size, args)
 
     name = str(args.input_map_path).split('/')[-1].split('.')[0]
     output_dir = os.path.join(str(Path(args.model).parent), name)
@@ -164,7 +160,7 @@ def main():
     in_img = cv2.imread(args.input_map_path)
 
     pad_px = win_size // 2
-    new_img = reconstruct_from_patches(patches_images_ws, win_size, pad_px, in_img.shape, np.float32)
+    new_img = reconstruct_from_patches(patches_images_ws, win_size, pad_px, in_img.shape, np.float32, test_img_pos)
 
     if args.invert_label_map:
         new_img = 1/new_img
@@ -278,7 +274,7 @@ def parse_args():
                         help='whether use gpu to train network')
     parser.add_argument('-g', '--gpu', type=str, default='0',
                         help='the gpu id to train net')
-    parser.add_argument('-m', '--model', type=str, default='../training_info/kameny/unet/2025-02-21_19-30-22_lr_0.0001_train_unet_bs_4_aug_ctr+aff/params/topo_best_val_99.pth',
+    parser.add_argument('-m', '--model', type=str, default='../training_info/Vltava_SMO/unet/2025-02-12_17-34-41_lr_0.0001_train_unet_bs_4_aug_ctr+aff_hard_thindilate_baloss50/params/topo_best_val_63.pth',#'../training_info/kameny/unet/2025-03-12_19-04-32_lr_0.0001_train_unet_bs_4_aug_ctr+aff/params/topo_best_val_12.pth',
                         help='the model to test')
 
     parser.add_argument('--channels', type=int, default=3,
@@ -300,7 +296,9 @@ def parse_args():
     parser.add_argument('--mu', type=float, default=10,
 						help='loss coeff for vgg features')
 
-    parser.add_argument('--input_map_path', type=str, default='dataset/B_raster.tif',
+    parser.add_argument('--input_map_path', type=str, default='dataset/SMO5_inference/mask_1950.tif',
+                        help='Input map image.')
+    parser.add_argument('--input_mask_path', type=str, default='dataset/SMO5_inference/SMO5_1950_clp.tif',
                         help='Input map image.')
     
     parser.add_argument('--invert_label_map', action='store_true', default=False,
