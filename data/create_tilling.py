@@ -38,7 +38,7 @@ def generate_tiling(image_path, w_size, mask_path=None):
     for row in range(tiles.shape[0]):
         for col in range(tiles.shape[1]):
             # Check mask if provided
-            if mask_tiles is not None:
+            if mask_path is not None:
                 mask_tile = mask_tiles[row, col]
                 # Skip tile if any part is masked
                 masked_ratio = np.mean(mask_tile)
