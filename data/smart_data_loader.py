@@ -8,34 +8,53 @@ from scipy.ndimage import distance_transform_edt
 import cv2
 
 from data.data_aug import transformation
-from data.create_tilling import generate_tiling
+from data.create_tilling import generate_tiling, generate_tiling_gdal
 
 
 class Data(data.Dataset):
     def __init__(self, large_image_path, large_gt_path, w_size, data_aug=None, aug_mode=None, dilation=False, mode=None, unseen=False, mask_path=None):
         self.image_path = large_image_path
         self.gt_path    = large_gt_path
-        self.w_size     = w_size
+        self.w_size = w_size
         self.dilation = dilation
         self.data_aug = data_aug
         self.aug_mode = aug_mode
         self.mode = mode
-        self.mask_path = mask_path
-        self.image_path, self.patch_pos    = generate_tiling(self.image_path, w_size=self.w_size, mask_path=self.mask_path)
-        self.image_path = np.array(self.image_path)
         self.unseen = unseen
-        if self.unseen:
-            print('Window_size: {}, Generate {} image patches.'.format(w_size, len(self.image_path)))
-        else:
-            self.gt_path       = np.array(generate_tiling(self.gt_path, w_size=self.w_size, mask_path=self.mask_path)[0])
-            print('Window_size: {}, Generate {} image patches and {} gt patches.'.format(w_size, len(self.image_path), len(self.gt_path)))
+        
+        # Use GDAL-based disk tiling for memory efficiency
+        try:
+            self.disk_dataset = generate_tiling_gdal(self.image_path, w_size=self.w_size, mask_path=mask_path)
+            self.patch_pos = self.disk_dataset.get_patch_positions()
+            if not self.unseen:
+                self.gt_path = generate_tiling_gdal(self.gt_path, w_size=self.w_size, mask_path=mask_path)
+        except (ImportError, ModuleNotFoundError):
+            print("GDAL not available, falling back to standard tiling (may use more memory)")
+            self.gt_path, self.patch_pos = generate_tiling(self.image_path, w_size=self.w_size, mask_path=mask_path)
+            self.gt_path = np.array(self.gt_path)
+            self.disk_dataset = None
+            if not self.unseen:
+                self.gt_path = generate_tiling(self.gt_path, w_size=self.w_size, mask_path=mask_path)
+            
+        print(f"Window_size: {w_size}, Generated {len(self)} image patches")
+        
+        if not self.unseen and large_gt_path:
+            # Handle ground truth if needed
+            # [your existing code for ground truth]
+            pass
 
     def __len__(self):
-        return len(self.image_path)
+        if hasattr(self, 'disk_dataset') and self.disk_dataset is not None:
+            return len(self.disk_dataset)
+        else:
+            return len(self.image_path)
 
     def __getitem__(self, index):
-        img    = self.image_path[index]
-
+        if hasattr(self, 'disk_dataset') and self.disk_dataset is not None:
+            img = self.disk_dataset[index]
+        else:
+            img = self.image_path[index]
+            
         if self.unseen:
             img = img / 255.
             img = np.array(img, dtype=np.float32)
@@ -43,7 +62,7 @@ class Data(data.Dataset):
             img = torch.from_numpy(img).float()
             return img
 
-        labels = self.gt_path[index]
+        labels = self.gt_path[index].squeeze()
         labels = labels/255.
         labels = labels.astype(np.uint8)
 

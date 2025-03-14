@@ -1,5 +1,6 @@
 import sys
 import os
+import gc
 current = os.path.dirname(os.path.realpath(__file__))
 parent = os.path.dirname(current)
 sys.path.append(parent)
@@ -42,6 +43,10 @@ from utils.reconstruct_tiling_dict import reconstruct_from_patches
 
 import pdb
 
+# Add these imports at the top
+from osgeo import gdal
+import tempfile
+
 def sigmoid(x):
     return 1./(1+np.exp(np.array(-1.*x)))
 
@@ -50,22 +55,37 @@ def test(model, win_size, args):
     test_mask_path = args.input_mask_path
     gt = None
 
-    # args.unseen == True -> gt is None
-    test_img  = Data(input, gt, win_size, unseen=args.unseen, mask_path=test_mask_path)
+    # Create a disk-based dataset to handle large images
+    test_img = Data(input, gt, win_size, unseen=args.unseen, mask_path=test_mask_path)
     test_img_pos = test_img.get_patch_positions()
-    testloader = torch.utils.data.DataLoader(test_img, batch_size=12, shuffle=False, num_workers=0, pin_memory=True)
+    
+    # Use a smaller batch size to reduce memory usage
+    batch_size = 8  # Reduce this if you encounter memory issues
+    testloader = torch.utils.data.DataLoader(test_img, batch_size=batch_size, 
+                                            shuffle=False, num_workers=0, pin_memory=False)
 
     if args.cuda:
         model.to(args.device)
 
+    # Create memory-mapped array for storing all patch results
+    result_dir = tempfile.mkdtemp(prefix="patch_results_")
+    patch_results_file = os.path.join(result_dir, "patch_results.dat")
+    
+    # Estimate the total number of patches
+    total_patches = len(test_img)
+    patches_results = np.memmap(patch_results_file, dtype=np.float32, mode='w+', 
+                              shape=(total_patches, win_size, win_size))
+    
     model.eval()
-    for i, (images) in enumerate(tqdm(testloader)):
+    start_idx = 0
+    
+    for i, (images) in enumerate(tqdm(testloader, desc="Processing image tiles")):
         if args.cuda:
             images = images.to(args.device)
 
         with torch.no_grad():
             if args.model_type == 'mosin':
-                init_labels = torch.zeros_like(images.shape[:2])
+                init_labels = torch.zeros((images.shape[0], 1, images.shape[2], images.shape[3]))
                 init_labels = init_labels.to(args.device)
                 out = model(images, init_labels)
                 fuse = out[0][0][-1].cpu().numpy()
@@ -80,26 +100,38 @@ def test(model, win_size, args):
             else:
                 out = model(images)
                 fuse = torch.sigmoid(out).cpu().numpy()
-
-        if i == 0:
-            patches_images_ws = fuse[:, 0,...]
-        else:
-            patches_images_ws = np.concatenate((patches_images_ws, fuse[:, 0,...]), axis=0)
-    return patches_images_ws, test_img_pos
+                
+        # Store results in the memory-mapped array
+        batch_size = fuse.shape[0]
+        patches_results[start_idx:start_idx+batch_size] = fuse[:, 0, ...]
+        start_idx += batch_size
+        
+        # Force cleanup
+        del images, out, fuse
+        if args.cuda:
+            torch.cuda.empty_cache()
+        gc.collect()
+    
+    # Clean up any temporary files from the disk dataset
+    if hasattr(test_img, 'disk_dataset') and test_img.disk_dataset is not None:
+        if hasattr(test_img.disk_dataset, 'cleanup'):
+            test_img.disk_dataset.cleanup()
+    
+    # Return the memory-mapped array and positions
+    return patches_results, test_img_pos
 
 
 def meyer_watershed(image_path, dynamic, area, output_path, out_visu_path):
     print('watershed/histmapseg/build/bin/histmapseg {} {} {} {} {}'.format(image_path, int(dynamic), int(area), output_path, out_visu_path))
     os.system('watershed/histmapseg/build/bin/histmapseg {} {} {} {} {}'.format(image_path, int(dynamic), int(area), output_path, out_visu_path))
 
+# Replace the main() function with this memory-efficient version
 def main():
     args = parse_args()
-
     torch.manual_seed(args.seed)
+    args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    # Choose the GPUs
-    args.device = torch.device("cuda:0".format(str(args.gpu)) if torch.cuda.is_available() else "cpu")
-
+    # Load model as before
     if args.model_type == 'unet' or args.model_type == 'bal' or args.model_type == 'topo' or args.model_type == 'pathloss' or args.model_type == 'unet_bri' or args.model_type == 'unet_aff' or args.model_type == 'unet_hom' or args.model_type == 'unet_tps' or args.model_type == 'unet_bri_aff' or args.model_type == 'unet_bri_hom' or args.model_type == 'unet_bri_tps':
         model = UNET(n_channels=args.channels, n_classes=args.classes)
         model.load_state_dict(torch.load('%s' % (args.model)))
@@ -148,44 +180,109 @@ def main():
         print('Load model {}'.format(args.model))
         win_size = 500
 
-    patches_images_ws, test_img_pos = test(model, win_size, args)
-
+    # Process tiles and get memory-mapped results
+    patches_results, test_img_pos = test(model, win_size, args)
+    
+    # Set up output directories
     name = str(args.input_map_path).split('/')[-1].split('.')[0]
     output_dir = os.path.join(str(Path(args.model).parent), name)
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-
-    # Reconstruct image
-    tile_save_image_path = os.path.join(output_dir, '{}_test.png'.format(str(args.model_type)))
-    in_img = cv2.imread(args.input_map_path)
-
+    
+    # Get image dimensions
+    from osgeo import gdal
+    input_ds = gdal.Open(args.input_map_path)
+    if input_ds is None:
+        raise ValueError(f"Cannot open image file {args.input_map_path}")
+    
+    img_width = input_ds.RasterXSize
+    img_height = input_ds.RasterYSize
+    input_ds = None  # Close dataset
+    
+    # Create output file
+    tile_save_image_path = os.path.join(output_dir, f"{str(args.model_type)}_test.tif")
+    
+    # Use GDAL to create the output file
+    print("Creating output image...")
+    driver = gdal.GetDriverByName('GTiff')
+    out_ds = driver.Create(tile_save_image_path, img_width, img_height, 1, gdal.GDT_Byte)
+    
+    if out_ds is None:
+        raise ValueError(f"Cannot create output file {tile_save_image_path}")
+    
+    # Create a memory-mapped array for the output image
+    output_file = os.path.join(output_dir, "output_memmap.dat")
+    if os.path.exists(output_file):
+        os.remove(output_file)
+        
+    reconstructed = np.memmap(output_file, dtype=np.float32, mode='w+', 
+                            shape=(img_height, img_width))
+    
+    # Calculate window and padding sizes
     pad_px = win_size // 2
-    new_img = reconstruct_from_patches(patches_images_ws, win_size, pad_px, in_img.shape, np.float32, test_img_pos)
-
+    
+    # Write tiles to the output image
+    print("Reconstructing image from patches...")
+    for i, (row, col) in enumerate(tqdm(test_img_pos, desc="Assembling tiles")):
+        # Calculate pixel positions
+        y_pos = row * pad_px
+        x_pos = col * pad_px
+        
+        # Get this patch result
+        patch_result = patches_results[i]
+        
+        # Write to the output
+        y_end = min(y_pos + win_size, img_height)
+        x_end = min(x_pos + win_size, img_width)
+        
+        # Ensure we don't write outside the image bounds
+        h = y_end - y_pos
+        w = x_end - x_pos
+        
+        reconstructed[y_pos:y_end, x_pos:x_end] = patch_result[:h, :w]
+        
+        # Periodically flush changes to disk
+        if i % 1000 == 0:
+            reconstructed.flush()
+    
+    # Apply inversion if needed
     if args.invert_label_map:
-        new_img = 1/new_img
-
-    new_img_ws = (new_img*255).astype(np.uint8)
-    cv2.imwrite(tile_save_image_path, new_img_ws)
-    print('Save reconstruction calibration image into {}'.format(tile_save_image_path))
-
+        reconstructed = 1/reconstructed
+    
+    # Convert to uint8 and write to the GDAL dataset
+    print("Writing final output to disk...")
+    # Process in chunks to avoid memory issues
+    chunk_size = 1000
+    for y in range(0, img_height, chunk_size):
+        y_end = min(y + chunk_size, img_height)
+        chunk = reconstructed[y:y_end, :]
+        # Convert to uint8
+        chunk = (chunk * 255).astype(np.uint8)
+        # Write to GDAL dataset
+        out_ds.GetRasterBand(1).WriteArray(chunk, 0, y)
+    
+    # Close GDAL dataset to flush changes
+    out_ds = None
+    
+    print(f'Saved reconstruction image to {tile_save_image_path}')
+    
+    # Clean up memory maps
+    del reconstructed
+    del patches_results
+    
+    # Remove temporary files
+    if os.path.exists(output_file):
+        os.remove(output_file)
+        
+    # Continue with watershed as before
     output_path = os.path.join(output_dir, 'label_map.tif')
     meyer_watershed(tile_save_image_path, args.dynamic, args.area, output_path, './out.png')
-
+    
+    # Continue with vectorization if requested
     if args.vectorization:
         save_vector = os.path.join(output_dir, 'vector_output')
-        if not os.path.exists(save_vector): os.makedirs(save_vector)
-
-        # TODO:
-        # save_output = os.path.join(output_dir, 'ws_output')
-        # if not os.path.exists(save_output): os.makedirs(save_output)
-
-        # output_path = os.path.join(save_output, '{}.tiff'.format('label'))
-        # vector_path = os.path.join(save_vector, '{}.npy'.format('vector_lines'))
-        # out_visu_path = os.path.join(output_dir, 'out.png')
-        # print('/lrde/home2/ychen/hierarchy_watershed/temporar_python_bindings/vectorization_ws_meyer/build/histmapseg {} {} {} {} {} {}'.format(tile_save_image_path, int(args.dynamic), int(args.area), output_path, out_visu_path, vector_path))
-        # os.system('/lrde/home2/ychen/hierarchy_watershed/temporar_python_bindings/vectorization_ws_meyer/build/histmapseg {} {} {} {} {} {}'.format(tile_save_image_path, int(args.dynamic), int(args.area), output_path, out_visu_path, vector_path))
-
+        if not os.path.exists(save_vector): 
+            os.makedirs(save_vector)
         watershed_label_path = output_path
         sal_2_polygon(watershed_label_path, save_vector)
 
@@ -274,7 +371,7 @@ def parse_args():
                         help='whether use gpu to train network')
     parser.add_argument('-g', '--gpu', type=str, default='0',
                         help='the gpu id to train net')
-    parser.add_argument('-m', '--model', type=str, default='../training_info/Vltava_SMO/unet/2025-02-12_17-34-41_lr_0.0001_train_unet_bs_4_aug_ctr+aff_hard_thindilate_baloss50/params/topo_best_val_63.pth',#'../training_info/kameny/unet/2025-03-12_19-04-32_lr_0.0001_train_unet_bs_4_aug_ctr+aff/params/topo_best_val_12.pth',
+    parser.add_argument('-m', '--model', type=str, default='../training_info/Vltava_SMO/unet/2025-02-07_11-22-04_lr_0.0001_train_unet_bs_4_aug_ctr+aff_hard_thindilate/params/topo_best_val_49.pth',
                         help='the model to test')
 
     parser.add_argument('--channels', type=int, default=3,
@@ -296,9 +393,9 @@ def parse_args():
     parser.add_argument('--mu', type=float, default=10,
 						help='loss coeff for vgg features')
 
-    parser.add_argument('--input_map_path', type=str, default='dataset/SMO5_inference/mask_1950.tif',
+    parser.add_argument('--input_map_path', type=str, default='dataset/Vltava_SMO/raster_hard_test2.jpg',
                         help='Input map image.')
-    parser.add_argument('--input_mask_path', type=str, default='dataset/SMO5_inference/SMO5_1950_clp.tif',
+    parser.add_argument('--input_mask_path', type=str, default=None,
                         help='Input map image.')
     
     parser.add_argument('--invert_label_map', action='store_true', default=False,

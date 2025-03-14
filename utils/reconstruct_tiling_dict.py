@@ -1,6 +1,8 @@
 import numpy as np
 import cv2
 import argparse
+import os
+from tempfile import mkdtemp
 
 
 def reconstruct_tiling(original_image_path, test_pred_dict, tile_save_path, w_size, image_debug=None, save_image=True):
@@ -39,8 +41,8 @@ def reconstruct_tiling_array(original_image_path, patches_images, w_size):
     return new_img
 
 
-def reconstruct_from_patches(patches_images, patch_size, step_size, image_size_2d, image_dtype, patch_positions=None):
-    '''Reconstruct image from patches, placing them in their original positions
+def reconstruct_from_patches(patches_images, patch_size, step_size, image_size_2d, image_dtype, patch_positions=None, batch_size=100):
+    '''Memory-efficient reconstruction from patches using memory mapping
     
     Args:
         patches_images: List of patch arrays
@@ -49,13 +51,15 @@ def reconstruct_from_patches(patches_images, patch_size, step_size, image_size_2
         image_size_2d: Original image dimensions (H,W) or (H,W,C)
         image_dtype: Data type for output image
         patch_positions: List of (row,col) positions for each patch. If None, assumes sequential filling
+        batch_size: Number of patches to process at once
     '''
     i_h, i_w = np.array(image_size_2d[:2]) + (patch_size, patch_size)
     p_h = p_w = patch_size
-    if len(patches_images.shape) == 4:
-        img = np.zeros((i_h+p_h//2, i_w+p_w//2, 3), dtype=image_dtype)
-    else:
-        img = np.zeros((i_h+p_h//2, i_w+p_w//2), dtype=image_dtype)
+    
+    # Create memory-mapped array for output
+    filename = os.path.join(mkdtemp(), 'reconstructed.npy')
+    shape = (i_h+p_h//2, i_w+p_w//2, 3) if len(patches_images.shape) == 4 else (i_h+p_h//2, i_w+p_w//2)
+    img = np.memmap(filename, dtype=image_dtype, mode='w+', shape=shape)
 
     numrows = (i_h)//step_size-1
     numcols = (i_w)//step_size-1
@@ -71,15 +75,32 @@ def reconstruct_from_patches(patches_images, patch_size, step_size, image_size_2
     if len(patch_positions) != len(patches_images):
         raise ValueError(f"Number of positions ({len(patch_positions)}) must match number of patches ({len(patches_images)})")
 
-    # Place each patch in its specified position
-    for patch, (row, col) in zip(patches_images, patch_positions):
-        if row >= numrows or col >= numcols:
-            continue
-        tt_roi = patch[patch_offset:-patch_offset, patch_offset:-patch_offset]
-        img[row*step_size:row*step_size+patch_inner,
-            col*step_size:col*step_size+patch_inner] = tt_roi
+    # Process patches in batches
+    total_patches = len(patches_images)
+    for start_idx in range(0, total_patches, batch_size):
+        end_idx = min(start_idx + batch_size, total_patches)
+        batch_patches = patches_images[start_idx:end_idx]
+        batch_positions = patch_positions[start_idx:end_idx]
 
-    return img[step_size//2:-(patch_size+step_size//2),step_size//2:-(patch_size+step_size//2),...]
+        for patch, (row, col) in zip(batch_patches, batch_positions):
+            if row >= numrows or col >= numcols:
+                continue
+            tt_roi = patch[patch_offset:-patch_offset, patch_offset:-patch_offset]
+            img[row*step_size:row*step_size+patch_inner,
+                col*step_size:col*step_size+patch_inner] = tt_roi
+        
+        # Force write to disk
+        img.flush()
+
+    # Extract final result
+    result = img[step_size//2:-(patch_size+step_size//2),
+                step_size//2:-(patch_size+step_size//2),...].copy()
+    
+    # Clean up
+    del img
+    os.unlink(filename)
+    
+    return result
 
 def save_random_chips(dataset, save_path, prefix, num_chips=5):
     """Save random chips from a dataset
