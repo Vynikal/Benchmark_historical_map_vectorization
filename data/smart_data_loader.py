@@ -30,8 +30,8 @@ class Data(data.Dataset):
                 self.gt_path = generate_tiling_gdal(self.gt_path, w_size=self.w_size, mask_path=mask_path)
         except (ImportError, ModuleNotFoundError):
             print("GDAL not available, falling back to standard tiling (may use more memory)")
-            self.gt_path, self.patch_pos = generate_tiling(self.image_path, w_size=self.w_size, mask_path=mask_path)
-            self.gt_path = np.array(self.gt_path)
+            self.image_path, self.patch_pos = generate_tiling(self.image_path, w_size=self.w_size, mask_path=mask_path)
+            self.image_path = np.array(self.gt_path)
             self.disk_dataset = None
             if not self.unseen:
                 self.gt_path = generate_tiling(self.gt_path, w_size=self.w_size, mask_path=mask_path)

@@ -47,6 +47,11 @@ import pdb
 from osgeo import gdal
 import tempfile
 
+# Add this import at the top of your file
+from evaluation.all_eval.run_eval import evaluation
+from evaluation.all_eval.pixel_eval.p_eval import corr_comp_qual, clDice
+import cv2
+
 def sigmoid(x):
     return 1./(1+np.exp(np.array(-1.*x)))
 
@@ -183,74 +188,92 @@ def main():
     # Process tiles and get memory-mapped results
     patches_results, test_img_pos = test(model, win_size, args)
     
+    # Get image dimensions
+    input_ds = gdal.Open(args.input_map_path)
+    if input_ds is None:
+        raise ValueError(f"Cannot open image file {args.input_map_path}")
+    img_width = input_ds.RasterXSize
+    img_height = input_ds.RasterYSize
+    input_ds = None  # Close dataset
+
     # Set up output directories
     name = str(args.input_map_path).split('/')[-1].split('.')[0]
     output_dir = os.path.join(str(Path(args.model).parent), name)
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    
-    # Get image dimensions
-    from osgeo import gdal
-    input_ds = gdal.Open(args.input_map_path)
-    if input_ds is None:
-        raise ValueError(f"Cannot open image file {args.input_map_path}")
-    
-    img_width = input_ds.RasterXSize
-    img_height = input_ds.RasterYSize
-    input_ds = None  # Close dataset
-    
-    # Create output file
-    tile_save_image_path = os.path.join(output_dir, f"{str(args.model_type)}_test.tif")
-    
-    # Use GDAL to create the output file
-    print("Creating output image...")
-    driver = gdal.GetDriverByName('GTiff')
-    out_ds = driver.Create(tile_save_image_path, img_width, img_height, 1, gdal.GDT_Byte)
-    
-    if out_ds is None:
-        raise ValueError(f"Cannot create output file {tile_save_image_path}")
-    
-    # Create a memory-mapped array for the output image
-    output_file = os.path.join(output_dir, "output_memmap.dat")
-    if os.path.exists(output_file):
-        os.remove(output_file)
-        
-    reconstructed = np.memmap(output_file, dtype=np.float32, mode='w+', 
-                            shape=(img_height, img_width))
-    
+
     # Calculate window and padding sizes
     pad_px = win_size // 2
-    
-    # Write tiles to the output image
+
     print("Reconstructing image from patches...")
-    for i, (row, col) in enumerate(tqdm(test_img_pos, desc="Assembling tiles")):
-        # Calculate pixel positions
-        y_pos = row * pad_px
-        x_pos = col * pad_px
+
+    # Use the memory-efficient reconstruction function
+    image_shape = (img_height, img_width, 1)  # Add channel dimension for consistency
+    reconstructed = reconstruct_from_patches(
+        patches_results, 
+        win_size, 
+        pad_px, 
+        image_shape, 
+        np.float32, 
+        patch_positions=test_img_pos,
+        batch_size=100  # Process 100 patches at a time to manage memory
+    )
+
+    # If you have ground truth, evaluate the edge prediction before saving
+    if args.gt_edge_path and os.path.exists(args.gt_edge_path):
+        print("Evaluating edge prediction against ground truth...")
         
-        # Get this patch result
-        patch_result = patches_results[i]
+        # Load ground truth edge map
+        gt_edge = cv2.imread(args.gt_edge_path, cv2.IMREAD_GRAYSCALE)
+        gt_edge = gt_edge / 255.0  # Normalize to 0-1
         
-        # Write to the output
-        y_end = min(y_pos + win_size, img_height)
-        x_end = min(x_pos + win_size, img_width)
+        # Resize ground truth if needed to match prediction
+        if gt_edge.shape != reconstructed.shape[:2]:
+            gt_edge = cv2.resize(gt_edge, (reconstructed.shape[1], reconstructed.shape[0]))
         
-        # Ensure we don't write outside the image bounds
-        h = y_end - y_pos
-        w = x_end - x_pos
+        # Convert to boolean
+        gt_bool = (gt_edge > 0.5).astype(bool)
+        pred_bool = (reconstructed > 0.5).astype(bool)
         
-        reconstructed[y_pos:y_end, x_pos:x_end] = patch_result[:h, :w]
+        # Calculate metrics with a tolerance of 8 pixels
+        corr, comp, qual, TP_g, TP_p, FN, FP = corr_comp_qual(gt_bool, pred_bool, slack=8)
         
-        # Periodically flush changes to disk
-        if i % 1000 == 0:
-            reconstructed.flush()
-    
+        # Calculate clDice (connectivity-preserving Dice)
+        score_clDice = clDice(pred_bool, gt_bool)
+        
+        # Print evaluation results
+        print('Edge Prediction Evaluation:')
+        print(f'Precision: {corr*100:.2f}%')
+        print(f'Recall: {comp*100:.2f}%')
+        print(f'F1-score: {(2*corr*comp/(corr+comp))*100:.2f}%')
+        print(f'Quality: {qual*100:.2f}%')
+        print(f'clDice: {score_clDice*100:.2f}%')
+        
+        # Save evaluation results to a CSV file
+        eval_results = {
+            'Precision': corr*100,
+            'Recall': comp*100,
+            'F1-score': (2*corr*comp/(corr+comp))*100,
+            'Quality': qual*100,
+            'clDice': score_clDice*100
+        }
+        pd.DataFrame([eval_results]).to_csv(os.path.join(output_dir, 'edge_evaluation.csv'), index=False)
+
     # Apply inversion if needed
     if args.invert_label_map:
         reconstructed = 1/reconstructed
-    
-    # Convert to uint8 and write to the GDAL dataset
+
+    # Create output file
+    tile_save_image_path = os.path.join(output_dir, f"{str(args.model_type)}_test.tif")
+
+    # Save using GDAL to avoid memory issues
     print("Writing final output to disk...")
+    driver = gdal.GetDriverByName('GTiff')
+    out_ds = driver.Create(tile_save_image_path, img_width, img_height, 1, gdal.GDT_Byte)
+
+    if out_ds is None:
+        raise ValueError(f"Cannot create output file {tile_save_image_path}")
+
     # Process in chunks to avoid memory issues
     chunk_size = 1000
     for y in range(0, img_height, chunk_size):
@@ -260,23 +283,19 @@ def main():
         chunk = (chunk * 255).astype(np.uint8)
         # Write to GDAL dataset
         out_ds.GetRasterBand(1).WriteArray(chunk, 0, y)
-    
+
     # Close GDAL dataset to flush changes
     out_ds = None
-    
+
     print(f'Saved reconstruction image to {tile_save_image_path}')
-    
+
     # Clean up memory maps
     del reconstructed
     del patches_results
-    
-    # Remove temporary files
-    if os.path.exists(output_file):
-        os.remove(output_file)
         
     # Continue with watershed as before
-    output_path = os.path.join(output_dir, 'label_map.tif')
-    meyer_watershed(tile_save_image_path, args.dynamic, args.area, output_path, './out.png')
+    # output_path = os.path.join(output_dir, 'label_map.tif')
+    # meyer_watershed(tile_save_image_path, args.dynamic, args.area, output_path, './out.png')
     
     # Continue with vectorization if requested
     if args.vectorization:
@@ -371,7 +390,7 @@ def parse_args():
                         help='whether use gpu to train network')
     parser.add_argument('-g', '--gpu', type=str, default='0',
                         help='the gpu id to train net')
-    parser.add_argument('-m', '--model', type=str, default='../training_info/Vltava_SMO/unet/2025-02-07_11-22-04_lr_0.0001_train_unet_bs_4_aug_ctr+aff_hard_thindilate/params/topo_best_val_49.pth',
+    parser.add_argument('-m', '--model', type=str, default='../training_info/Vltava_SMO/unet/2025-02-07_11-22-04_lr_0.0001_train_unet_bs_4_aug_ctr+aff_hard_thindilate/params/topo_best_val_49.pth',#'../training_info/kameny/unet/2025-03-12_19-04-32_lr_0.0001_train_unet_bs_4_aug_ctr+aff/params/topo_best_val_49.pth',#
                         help='the model to test')
 
     parser.add_argument('--channels', type=int, default=3,
@@ -393,13 +412,16 @@ def parse_args():
     parser.add_argument('--mu', type=float, default=10,
 						help='loss coeff for vgg features')
 
-    parser.add_argument('--input_map_path', type=str, default='dataset/Vltava_SMO/raster_hard_test2.jpg',
+    parser.add_argument('--input_map_path', type=str, default='dataset/Vltava_SMO/raster_hard_insane.jpg',#None,#
                         help='Input map image.')
-    parser.add_argument('--input_mask_path', type=str, default=None,
+    parser.add_argument('--input_mask_path', type=str, default=None,#'dataset/Vltava_SMO/mask_1970.tif',#
                         help='Input map image.')
     
     parser.add_argument('--invert_label_map', action='store_true', default=False,
                         help='use negative pixels')
+    
+    parser.add_argument('--gt_edge_path', type=str, default=None,
+                        help='Path to ground truth edge ZZmap for evaluation')
     
     return parser.parse_args()
 
