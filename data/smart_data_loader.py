@@ -37,11 +37,6 @@ class Data(data.Dataset):
                 self.gt_path = generate_tiling(self.gt_path, w_size=self.w_size, mask_path=mask_path)
             
         print(f"Window_size: {w_size}, Generated {len(self)} image patches")
-        
-        if not self.unseen and large_gt_path:
-            # Handle ground truth if needed
-            # [your existing code for ground truth]
-            pass
 
     def __len__(self):
         if hasattr(self, 'disk_dataset') and self.disk_dataset is not None:

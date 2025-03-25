@@ -306,6 +306,30 @@ def main():
         sal_2_polygon(watershed_label_path, save_vector)
 
     print('Done')
+    
+    # Clean up all temporary directories created by tempfile.mkdtemp
+    print("Cleaning up temporary files...")
+    import shutil
+    import glob
+    
+    # Find all temp directories created by this script
+    temp_patterns = [
+        "/tmp/patch_results_*",   # Patch results
+        "/tmp/tmp*",              # Generic temp dirs
+        "/tmp/reconstructed*"     # Reconstruction dirs
+    ]
+    
+    cleaned_dirs = 0
+    for pattern in temp_patterns:
+        for temp_dir in glob.glob(pattern):
+            if os.path.isdir(temp_dir):
+                try:
+                    shutil.rmtree(temp_dir)
+                    cleaned_dirs += 1
+                except Exception as e:
+                    print(f"Warning: Failed to clean up {temp_dir}: {e}")
+    
+    print(f"Cleaned up {cleaned_dirs} temporary directories")
 
 def di(lines, i):
     return lines[lines[..., 2] == i, :2]

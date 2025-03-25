@@ -92,11 +92,50 @@ def reconstruct_from_patches(patches_images, patch_size, step_size, image_size_2
         # Force write to disk
         img.flush()
 
-    # Extract final result
-    result = img[step_size//2:-(patch_size+step_size//2),
-                step_size//2:-(patch_size+step_size//2),...].copy()
-    
-    # Clean up
+    # Extract final result in tiles to avoid memory issues
+    out_h = image_size_2d[0]
+    out_w = image_size_2d[1]
+    has_channels = len(img.shape) > 2 and img.shape[2] > 1
+    out_channels = img.shape[2] if has_channels else 1
+        
+    # Process in memory using tiles to avoid OOM errors
+    # Create a new memory-mapped output array
+    result_filename = os.path.join(mkdtemp(), 'final_result.npy')
+    out_shape = (out_h, out_w, out_channels) if has_channels else (out_h, out_w)
+    result = np.memmap(result_filename, dtype=image_dtype, mode='w+', shape=out_shape)  
+    # Process in manageable chunks
+    tile_size = 1024  # Smaller tiles to reduce memory pressure
+    for y_start in range(0, out_h, tile_size):
+        y_end = min(y_start + tile_size, out_h)
+        
+        for x_start in range(0, out_w, tile_size):
+            x_end = min(x_start + tile_size, out_w)
+            
+            # Calculate source region in memory-mapped array
+            src_y_start = step_size//2 + y_start
+            src_y_end = step_size//2 + y_end
+            src_x_start = step_size//2 + x_start
+            src_x_end = step_size//2 + x_end
+            
+            # Extract just this tile (create a small copy in memory)
+            tile = img[src_y_start:src_y_end, src_x_start:src_x_end].copy()
+            
+            # Copy to result
+            if has_channels:
+                result[y_start:y_end, x_start:x_end, :] = tile
+            else:
+                result[y_start:y_end, x_start:x_end] = tile
+            
+            # Explicitly delete the tile to free memory
+            del tile
+            
+        # Flush changes to disk after each row of tiles
+        result.flush()
+        
+        # Force garbage collection
+        import gc
+        gc.collect()    
+    # Clean up the first memory-mapped file
     del img
     os.unlink(filename)
     

@@ -116,7 +116,7 @@ def train(args):
     val_img_path = 'dataset/A_raster_clip2.tif'
     val_gt_path  = 'dataset/A_GT_clip2.tif'
     val_mask_path = 'dataset/A_mask_clip2.tif'
-    val_img = Data(val_img_path, val_gt_path, w_size, data_aug=None, dilation=True, mode='loss', mask_path=None)
+    val_img = Data(val_img_path, val_gt_path, w_size, data_aug=None, dilation=args.dilation, mode='loss', mask_path=val_mask_path)
     val_img_pos = val_img.get_patch_positions()
     valloader = torch.utils.data.DataLoader(val_img, batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=True)
     n_val = len(valloader)
@@ -425,6 +425,8 @@ def parse_args():
                         help='Pre-load model')
     parser.add_argument('--epochs', type=int, default=50,
                         help='Epoch to train network, default is 100')
+    parser.add_argument('--dilation', type=int, default=False,
+                        help='Dilate the ground truth by 1px')
     # parser.add_argument('--max-iter', type=int, default=40000,
     #                     help='max iters to train network, default is 40000')
     # parser.add_argument('--iter-size', type=int, default=10,
