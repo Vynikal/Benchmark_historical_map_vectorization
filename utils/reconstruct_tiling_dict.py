@@ -137,8 +137,11 @@ def reconstruct_from_patches(patches_images, patch_size, step_size, image_size_2
         gc.collect()    
     # Clean up the first memory-mapped file
     del img
-    os.unlink(filename)
-    
+    try:
+        os.unlink(filename)
+    except:
+        pass
+
     return result
 
 def save_random_chips(dataset, save_path, prefix, num_chips=5):
