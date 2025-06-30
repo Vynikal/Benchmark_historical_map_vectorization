@@ -26,6 +26,9 @@ from skimage import measure
 from shapely.geometry import Polygon
 import geopandas as gpd
 
+from scipy import ndimage
+from scipy.ndimage.morphology import binary_dilation
+
 # Import dataloader
 from data.smart_data_loader import Data
 
@@ -57,7 +60,7 @@ def sigmoid(x):
 
 def test(model, win_size, args):
     input = args.input_map_path
-    test_mask_path = args.input_mask_path
+    test_mask_path = None
     gt = None
 
     # Create a disk-based dataset to handle large images
@@ -222,52 +225,217 @@ def main():
     # If you have ground truth, evaluate the edge prediction before saving
     if args.gt_edge_path and os.path.exists(args.gt_edge_path):
         print("Evaluating edge prediction against ground truth...")
+        # Create output file
+        base_filename = f"{str(args.model_type)}_test"
         
         # Load ground truth edge map
         gt_edge = cv2.imread(args.gt_edge_path, cv2.IMREAD_GRAYSCALE)
+
+
         gt_edge = gt_edge / 255.0  # Normalize to 0-1
+        gt_bg = 1 - gt_edge  # Invert to get background
+        reconstructed_bg = 1 - reconstructed  # Invert prediction to get background
+
+        if args.dilation:
+            struct1 = ndimage.generate_binary_structure(2, 2)
+            gt_edge = binary_dilation(gt_edge, structure=struct1).astype(np.uint8)
+
         
         # Resize ground truth if needed to match prediction
         if gt_edge.shape != reconstructed.shape[:2]:
             gt_edge = cv2.resize(gt_edge, (reconstructed.shape[1], reconstructed.shape[0]))
         
+        # Load and apply mask if provided
+        if args.input_mask_path and os.path.exists(args.input_mask_path):
+            print("Using mask to clip evaluation area...")
+            mask = cv2.imread(args.input_mask_path, cv2.IMREAD_GRAYSCALE)
+            
+            # Resize mask if needed
+            if mask.shape != reconstructed.shape[:2]:
+                mask = cv2.resize(mask, (reconstructed.shape[1], reconstructed.shape[0]))
+            
+            # Normalize mask to binary (0 or 1)
+            mask = (mask > 127).astype(np.uint8)
+            
+            # Apply mask to both ground truth and prediction
+            gt_edge = gt_edge * mask
+            gt_bg = gt_bg * mask
+            reconstructed = reconstructed * mask
+            reconstructed_bg = reconstructed_bg * mask
+            tile_save_image_path = os.path.join(output_dir, f"{base_filename}_masked.tif")
+            mask_applied = True
+        else:
+            # No mask, use the full prediction
+            tile_save_image_path = os.path.join(output_dir, f"{base_filename}.tif")
+            mask_applied = False
+        
         # Convert to boolean
         gt_bool = (gt_edge > 0.5).astype(bool)
-        pred_bool = (reconstructed > 0.5).astype(bool)
+        gt_bool_bg = (gt_bg > 0.5).astype(bool)
+
+        pred_bool = (reconstructed > args.threshold).astype(bool)
+        pred_bool_bg = (reconstructed_bg > args.threshold).astype(bool)
         
-        # Calculate metrics with a tolerance of 8 pixels
-        corr, comp, qual, TP_g, TP_p, FN, FP = corr_comp_qual(gt_bool, pred_bool, slack=8)
-        
-        # Calculate clDice (connectivity-preserving Dice)
+        # Calculate metrics for EDGE class (foreground)
+        print("Calculating metrics for EDGE class...")
+        edge_corr, edge_comp, edge_qual, TP_edge, TP_p, FN, FP = corr_comp_qual(gt_bool, pred_bool, slack=0)
+        edge_f1 = (2 * edge_corr * edge_comp) / (edge_corr + edge_comp) if (edge_corr + edge_comp) > 0 else 0
+
+        # Calculate metrics for BACKGROUND class by inverting the masks
+        print("Calculating metrics for BACKGROUND class...")
+
+        # Calculate background metrics using the same function
+        bg_corr, bg_comp, bg_qual, TP_bg, _, _, _ = corr_comp_qual(gt_bool_bg, pred_bool_bg, slack=0)
+        bg_f1 = (2 * bg_corr * bg_comp) / (bg_corr + bg_comp) if (bg_corr + bg_comp) > 0 else 0
+
+        # Calculate class distribution statistics
+        total_pixels = gt_bool.size
+        if args.input_mask_path and os.path.exists(args.input_mask_path):
+            # Count only pixels in mask
+            total_pixels = np.sum(mask)
+
+        edge_pixels = np.sum(gt_bool)
+        bg_pixels = total_pixels - edge_pixels
+        edge_percent = (edge_pixels / total_pixels) * 100
+        bg_percent = (bg_pixels / total_pixels) * 100
+
+        # Calculate clDice for edge class (connectivity-preserving Dice)
         score_clDice = clDice(pred_bool, gt_bool)
-        
-        # Print evaluation results
+
+        # Calculate balanced accuracy (average of both recalls)
+        balanced_acc = (edge_comp + bg_comp) / 2
+
+        # Print evaluation results for both classes
         print('Edge Prediction Evaluation:')
-        print(f'Precision: {corr*100:.2f}%')
-        print(f'Recall: {comp*100:.2f}%')
-        print(f'F1-score: {(2*corr*comp/(corr+comp))*100:.2f}%')
-        print(f'Quality: {qual*100:.2f}%')
+        print(f'Class distribution: Edge={edge_percent:.2f}%, Background={bg_percent:.2f}%')
+        print('EDGE CLASS METRICS:')
+        print(f'Precision: {edge_corr*100:.2f}%')
+        print(f'Recall: {edge_comp*100:.2f}%')
+        print(f'F1-score: {edge_f1*100:.2f}%')
+        print(f'Quality: {edge_qual*100:.2f}%')
         print(f'clDice: {score_clDice*100:.2f}%')
-        
-        # Save evaluation results to a CSV file
+
+        print('BACKGROUND CLASS METRICS:')
+        print(f'Precision: {bg_corr*100:.2f}%')
+        print(f'Recall: {bg_comp*100:.2f}%')
+        print(f'F1-score: {bg_f1*100:.2f}%')
+        print(f'Quality: {bg_qual*100:.2f}%')
+
+        print('COMBINED METRICS:')
+        print(f'Balanced Accuracy: {balanced_acc*100:.2f}%')
+
+        # Save comprehensive evaluation results to a CSV file
         eval_results = {
-            'Precision': corr*100,
-            'Recall': comp*100,
-            'F1-score': (2*corr*comp/(corr+comp))*100,
-            'Quality': qual*100,
-            'clDice': score_clDice*100
+            'Edge_Percentage': edge_percent,
+            'Background_Percentage': bg_percent,
+            'Edge_Precision': edge_corr*100,
+            'Edge_Recall': edge_comp*100,
+            'Edge_F1': edge_f1*100,
+            'Edge_Quality': edge_qual*100,
+            'Edge_clDice': score_clDice*100,
+            'Background_Precision': bg_corr*100,
+            'Background_Recall': bg_comp*100,
+            'Background_F1': bg_f1*100,
+            'Background_Quality': bg_qual*100,
+            'Balanced_Accuracy': balanced_acc*100,
+            'Masked': args.input_mask_path is not None
         }
         pd.DataFrame([eval_results]).to_csv(os.path.join(output_dir, 'edge_evaluation.csv'), index=False)
+
+        # After calculating the metrics but before saving the reconstructed image:
+        if args.gt_edge_path and os.path.exists(args.gt_edge_path):
+            
+            # Create visualization image for TP/FP/FN
+            print("Generating visualization of True/False Positives/Negatives...")
+            
+            # Create a blank RGB visualization image
+            h, w = gt_bool.shape
+            visualization = np.zeros((h, w, 3), dtype=np.uint8)
+            
+            # Assign colors to different categories:
+            # - True Positives (TP): Green (correctly detected edges)
+            # - False Positives (FP): Red (false alarms)
+            # - False Negatives (FN): Blue (missed edges)
+            # - True Negatives (TN): Black (correctly identified background)
+            
+            # True positives (where both GT and prediction are True) - Green
+            true_positives = np.logical_and(gt_bool, pred_bool)
+            visualization[true_positives] = [0, 255, 0]
+            
+            # False positives (where GT is False but prediction is True) - Red
+            false_positives = np.logical_and(np.logical_not(gt_bool), pred_bool)
+            visualization[false_positives] = [255, 0, 0]
+            
+            # False negatives (where GT is True but prediction is False) - Blue
+            false_negatives = np.logical_and(gt_bool, np.logical_not(pred_bool))
+            visualization[false_negatives] = [0, 0, 255]
+            
+            # Count pixels in each category
+            tp_count = np.sum(true_positives)
+            fp_count = np.sum(false_positives)
+            fn_count = np.sum(false_negatives)
+            tn_count = np.sum(np.logical_and(np.logical_not(gt_bool), np.logical_not(pred_bool)))
+            
+            # Add counts to visualization metadata
+            error_counts = {
+                'True_Positives': int(tp_count),
+                'False_Positives': int(fp_count),
+                'False_Negatives': int(fn_count),
+                'True_Negatives': int(tn_count),
+                'TP_Percentage': float(tp_count / total_pixels * 100),
+                'FP_Percentage': float(fp_count / total_pixels * 100),
+                'FN_Percentage': float(fn_count / total_pixels * 100),
+                'TN_Percentage': float(tn_count / total_pixels * 100)
+            }
+            
+            # Add these counts to the existing evaluation results
+            eval_results.update(error_counts)
+            
+            # Save the visualization image
+            vis_path = os.path.join(output_dir, f"{base_filename}_errors{'_masked' if mask_applied else ''}.png")
+            cv2.imwrite(vis_path, visualization)
+            
+            print(f"Saved error visualization to {vis_path}")
+            print(f"TP: {tp_count} ({tp_count/total_pixels*100:.2f}%) | "
+                  f"FP: {fp_count} ({fp_count/total_pixels*100:.2f}%) | "
+                  f"FN: {fn_count} ({fn_count/total_pixels*100:.2f}%)")
+        
+            # After the existing visualization code, add the following to create a background visualization:
+            print("Generating background class visualization...")
+    
+            # Create a second RGB visualization image specifically for background
+            bg_visualization = np.zeros((h, w, 3), dtype=np.uint8)
+    
+            # Identify the four categories
+            true_positives = np.logical_and(gt_bool_bg, pred_bool_bg)                       # Correctly detected edges
+            false_positives = np.logical_and(np.logical_not(gt_bool_bg), pred_bool_bg)      # False edges detected
+            false_negatives = np.logical_and(gt_bool_bg, np.logical_not(pred_bool_bg))      # Missed edges
+            true_negatives = np.logical_and(np.logical_not(gt_bool_bg), np.logical_not(pred_bool_bg))  # Correctly identified background
+    
+            # For background visualization:
+            # - True Negatives (TN): Green (correctly identified background)
+            # - False Positives (FP): Red (background incorrectly marked as edge)
+            # - False Negatives (FN): Blue (edge incorrectly marked as background)
+            # - True Positives (TP): Black (correctly identified edges)
+            bg_visualization[true_positives] = [0, 255, 0]     # Green for TN (correct background)
+            bg_visualization[false_positives] = [255, 0, 0]    # Red for FP (background incorrectly identified as edge)
+            bg_visualization[false_negatives] = [0, 0, 255]    # Blue for FN (edge incorrectly identified as background)
+    
+            # Save the background visualization
+            bg_vis_path = os.path.join(output_dir, f"{base_filename}_background{'_masked' if mask_applied else ''}.png")
+            cv2.imwrite(bg_vis_path, bg_visualization)
+    
+            print(f"Saved background visualization to {bg_vis_path}")
+            print(f"TN: {tn_count} ({tn_count/total_pixels*100:.2f}%) | "
+                  f"FP: {fp_count} ({fp_count/total_pixels*100:.2f}%) | "
+                  f"FN: {fn_count} ({fn_count/total_pixels*100:.2f}%)")
 
     # Apply inversion if needed
     if args.invert_label_map:
         reconstructed = 1/reconstructed
 
-    # Create output file
-    tile_save_image_path = os.path.join(output_dir, f"{str(args.model_type)}_test.tif")
-
     # Save using GDAL to avoid memory issues
-    print("Writing final output to disk...")
+    print(f"Writing {'masked ' if mask_applied else ''}output to disk...")
     driver = gdal.GetDriverByName('GTiff')
     out_ds = driver.Create(tile_save_image_path, img_width, img_height, 1, gdal.GDT_Byte)
 
@@ -287,7 +455,7 @@ def main():
     # Close GDAL dataset to flush changes
     out_ds = None
 
-    print(f'Saved reconstruction image to {tile_save_image_path}')
+    print(f"Saved {'masked ' if mask_applied else ''}reconstruction image to {tile_save_image_path}")
 
     # Clean up memory maps
     del reconstructed
@@ -414,7 +582,7 @@ def parse_args():
                         help='whether use gpu to train network')
     parser.add_argument('-g', '--gpu', type=str, default='0',
                         help='the gpu id to train net')
-    parser.add_argument('-m', '--model', type=str, default='../training_info/Vltava_SMO/unet/2025-02-07_11-22-04_lr_0.0001_train_unet_bs_4_aug_ctr+aff_hard_thindilate/params/topo_best_val_49.pth',#'../training_info/kameny/unet/2025-03-12_19-04-32_lr_0.0001_train_unet_bs_4_aug_ctr+aff/params/topo_best_val_49.pth',#
+    parser.add_argument('-m', '--model', type=str, default='../training_info/kameny/unet/2025-06-09_20-09-18_lr_0.0001_train_unet_bs_4_dice__aug_ctr+aff_inv_dilate/params/topo_best_val_97.pth',
                         help='the model to test')
 
     parser.add_argument('--channels', type=int, default=3,
@@ -436,15 +604,19 @@ def parse_args():
     parser.add_argument('--mu', type=float, default=10,
 						help='loss coeff for vgg features')
 
-    parser.add_argument('--input_map_path', type=str, default='dataset/Vltava_SMO/raster_hard_insane.jpg',#None,#
+    parser.add_argument('--input_map_path', type=str, default='dataset/Test3.tif', #dataset/Vltava_SMO/raster_hard_test2.jpg',#'dataset/SMO5_inference/SMO5_1980.tif',#
                         help='Input map image.')
-    parser.add_argument('--input_mask_path', type=str, default=None,#'dataset/Vltava_SMO/mask_1970.tif',#
+    parser.add_argument('--input_mask_path', type=str, default='dataset/Test3_mask.tif',#'dataset/Vltava_SMO/mask_1980.tif',#
                         help='Input map image.')
     
     parser.add_argument('--invert_label_map', action='store_true', default=False,
                         help='use negative pixels')
+    parser.add_argument('--dilation', action='store_true', default=False,
+                        help='dilate by one pixel')
+    parser.add_argument('--threshold', action='store_true', default=0.5,
+                        help='CC thresholding')
     
-    parser.add_argument('--gt_edge_path', type=str, default=None,
+    parser.add_argument('--gt_edge_path', type=str, default='dataset/Test3_GT_inv.tif',
                         help='Path to ground truth edge ZZmap for evaluation')
     
     return parser.parse_args()

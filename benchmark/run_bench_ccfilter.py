@@ -92,7 +92,7 @@ if __name__ == '__main__':
         AUC_THRESHOLD_DEFAULT = 0.5
         parser = argparse.ArgumentParser(description='Benchmark evaluaion')
 
-        parser.add_argument('--image_dir', type=str, default='../training_info/Vltava_SMO/unet/2025-01-23_20-30-50_lr_0.0001_train_unet_bs_4_aug_ctr+aff/reconstruction_png',
+        parser.add_argument('--image_dir', type=str, default='../training_info/kameny/unet/2025-06-08_13-03-54_lr_0.0001_train_unet_bs_4_bce__aug_ctr+aff_inv_dilate/reconstruction_png',#'../training_info/HistoricalMap2020/unet/2025-01-12_16-59-21_lr_0.0001_train_unet_bs_4_no_aug/reconstruction_png',#
             help='The input path of the image')
         ABS_PATH = Path(parser.parse_args().image_dir).parent
         parser.add_argument('--output_path', type=str, default=r'{}/label_maps_cc_labelling/'.format(ABS_PATH),
@@ -104,9 +104,9 @@ if __name__ == '__main__':
         parser.add_argument('--auc-threshold', type=float,
             help='Threshold value (float) for AUC: 0.5 <= t < 1.'f' Default={AUC_THRESHOLD_DEFAULT}', default=AUC_THRESHOLD_DEFAULT)
 
-        parser.add_argument('--gt_path', type=str, default='dataset/raster_val_GT.png',
+        parser.add_argument('--gt_path', type=str, default='dataset/Val3_GT_inv.tif',
             help='The ground truth of the label path')
-        parser.add_argument('--validation_mask', type=str, default=None,
+        parser.add_argument('--validation_mask', type=str, default='dataset/Val3_mask.tif',
             help='Validation mask to evaluate the results')
         return parser.parse_args()
     print('##########################  GRID SEARCH VALIDATION  ##################################')

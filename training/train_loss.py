@@ -33,6 +33,7 @@ from model.mosin import mosin, VGGNet
 # Import loss function
 from loss.bce_loss import cross_entropy_loss2d_sigmoid
 from loss.multi_scale_bce_loss import ms_bce_loss
+from loss.dice_loss import dice_loss as dice
 from loss.mosin_loss import iterative_loss
 from loss.topo_loss import getTopoLoss
 from loss.MBD_BAL.BALoss import boundary_awareness_loss
@@ -47,7 +48,7 @@ def train(args):
     # Initialize the model 
     if args.model_type == 'unet':
         model = unet(n_channels=args.channels, n_classes=args.classes)
-        w_size = 500
+        w_size = 256
         if args.topo_loss_type == 'topoloss' or args.topo_loss_type == 'baloss' or args.topo_loss_type == 'pathloss':
             model.load_state_dict(torch.load(args.pretrain))
             print('Load pretrain: {}'.format(args.pretrain))
@@ -94,10 +95,10 @@ def train(args):
         pass
 
     if not(args.topo_loss_type):
-        args.topo_loss_type = 'BCE_loss'
+        args.topo_loss_type = 'no_topo'
 
     print('Training with model: {}'.format(args.model_type))
-    print('Training with loss:  {}'.format(args.topo_loss_type))
+    print('Training with losses: {}, {}'.format(args.main_loss_type, args.topo_loss_type))
 
     aug_mode = args.data_aug_mode
     if args.data_aug:
@@ -105,18 +106,18 @@ def train(args):
     else:
         data_aug_stat = 'no_aug'
 
-    train_img_path = 'dataset/B_raster.tif'
-    train_gt_path  = 'dataset/B_GT.tif'
-    train_mask_path = 'dataset/B_mask.tif'
-    train_img = Data(train_img_path, train_gt_path, w_size, args.data_aug, aug_mode=aug_mode, dilation=True, mode='loss', mask_path=None)
+    train_img_path = 'dataset/TM/Train.tif'
+    train_gt_path  = 'dataset/TM/Train_GT2.tif'
+    # train_mask_path = 'dataset/TM/Train3_mask.tif'
+    train_img = Data(train_img_path, train_gt_path, w_size, args.data_aug, aug_mode=aug_mode, dilation=args.dilation, mode='loss', mask_path=None)
     trainloader = torch.utils.data.DataLoader(train_img, batch_size=args.batch_size, shuffle=True, num_workers=0, pin_memory=True) # WARNING: SHUFFLE MUST BE TRUE TO PREVENT HUGE OVERFIT
     n_train = len(trainloader)
 
     # Validation evaluation
-    val_img_path = 'dataset/A_raster_clip2.tif'
-    val_gt_path  = 'dataset/A_GT_clip2.tif'
-    val_mask_path = 'dataset/A_mask_clip2.tif'
-    val_img = Data(val_img_path, val_gt_path, w_size, data_aug=None, dilation=args.dilation, mode='loss', mask_path=val_mask_path)
+    val_img_path = 'dataset/TM/Val.tif'
+    val_gt_path  = 'dataset/TM/Val_GT2.tif'
+    # val_mask_path = 'dataset/Val3_mask.tif'
+    val_img = Data(val_img_path, val_gt_path, w_size, data_aug=None, dilation=args.dilation, mode='loss', mask_path=None)
     val_img_pos = val_img.get_patch_positions()
     valloader = torch.utils.data.DataLoader(val_img, batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=True)
     n_val = len(valloader)
@@ -140,7 +141,7 @@ def train(args):
         parm_save_path = os.path.join(res_dir, 'params')
     else:
         model_name = args.model_type
-        loss_type = 'train_{}'.format(model_name) + '_bs_'+ str(args.batch_size)
+        loss_type = 'train_{}'.format(model_name) + '_bs_'+ str(args.batch_size) + '_{}_'.format(args.main_loss_type)
 
         # Create res directory
         res_dir = os.path.join(args.res_dir + args.dataset, model_name, str(datetime.datetime.now()).replace(' ', '_').replace(':', '-').split('.')[0] + '_lr_' + str(args.base_lr)) + '_' + loss_type + '_' + data_aug_stat
@@ -174,15 +175,11 @@ def train(args):
 
 
     epochs = args.epochs
-    bce_loss = 0
-    topo_loss = 0
-    val_bce_loss = 0
-    val_topo_loss = 0
+    bce_loss, dice_loss, topo_loss = 0, 0, 0
+    val_bce_loss, val_dice_loss, val_topo_loss = 0, 0, 0
     for epoch in range(start_epoch, start_epoch+epochs):
         model.train()
-        mean_loss = []
-        mean_bce_loss= []
-        mean_topo_loss = []
+        mean_loss, mean_bce_loss, mean_dice_loss, mean_topo_loss = [], [], [], []
         with tqdm(total=int(n_train*args.batch_size)-1, desc=f'Epoch {epoch + 1}/{epochs}', unit='img', bar_format='{desc:<5.5}{percentage:3.0f}%|{bar:10}{r_bar}') as pbar:
             for i, (img, labels) in enumerate(trainloader):
                 labels, seeds = labels['labels'], labels['seeds']
@@ -200,11 +197,19 @@ def train(args):
                 else:
                     out = model(img)
 
-                if args.model_type == 'unet' or args.model_type == 'vit' or args.model_type == 'pvt':
-                    bce_loss = cross_entropy_loss2d_sigmoid(out, labels)
-                elif args.model_type == 'hed' or args.model_type == 'bdcn':
-                    bce_loss = ms_bce_loss(out, labels, args.batch_size, args.model_type, args.side_weight, args.fuse_weight)
-                    out = out[-1]
+                if args.main_loss_type in ['bce', 'both']:
+                    if args.model_type == 'unet' or args.model_type == 'vit' or args.model_type == 'pvt':
+                        bce_loss = cross_entropy_loss2d_sigmoid(out, labels)
+                    elif args.model_type == 'hed' or args.model_type == 'bdcn':
+                        bce_loss = ms_bce_loss(out, labels, args.batch_size, args.model_type, args.side_weight, args.fuse_weight)
+                        out = out[-1]
+                else:
+                    bce_loss = torch.Tensor([0])
+
+                if args.main_loss_type in ['dice', 'both']:
+                    dice_loss = dice(out, labels)
+                else:
+                    dice_loss = torch.Tensor([0])
 
                 topo_loss = 0
                 if args.topo_loss_type == 'mosin':
@@ -233,9 +238,11 @@ def train(args):
                     pass
                 
                 if args.cuda:
+                    bce_loss = bce_loss.cuda()
+                    dice_loss = dice_loss.cuda()
                     topo_loss = topo_loss.cuda()
 
-                total_loss = bce_loss + topo_loss
+                total_loss = bce_loss + dice_loss + topo_loss
 
                 # Back calculating loss
                 total_loss.backward()
@@ -245,21 +252,21 @@ def train(args):
 
                 mean_loss.append(total_loss.item())
                 mean_bce_loss.append(bce_loss.item())
+                mean_dice_loss.append(dice_loss.item())
                 mean_topo_loss.append(topo_loss.item())
 
                 # Update the pbar
                 pbar.update(labels.shape[0])
 
                 # Add loss (batch) value to tqdm
-                pbar.set_postfix(**{'total_loss': total_loss.item(), 'topo_loss': topo_loss.item(), 'bce_loss': bce_loss.item()})
+                pbar.set_postfix(**{'total_loss': total_loss.item(), 'bce_loss': bce_loss.item(), 'dice_loss': dice_loss.item(), 'topo_loss': topo_loss.item()})
             train_mean_loss = np.mean(mean_loss)
             train_bce_loss = np.mean(mean_bce_loss)
+            train_dice_loss = np.mean(mean_dice_loss)
             train_topo_loss = np.mean(mean_topo_loss)
 
         model.eval()
-        val_mean_loss = []
-        val_mean_bce_loss = []
-        val_mean_topo_loss = []
+        val_mean_loss, val_mean_bce_loss, val_mean_dice_loss, val_mean_topo_loss = [], [], [], []
 
         # Before the loop
         total_imgs = len(valloader.dataset)  # Total number of patches
@@ -283,11 +290,19 @@ def train(args):
                     else:
                         val_out = model(val_img)
 
-                if args.model_type == 'unet' or args.model_type == 'vit' or args.model_type == 'pvt':
-                    val_bce_loss = cross_entropy_loss2d_sigmoid(val_out, val_labels)
-                elif args.model_type == 'hed' or args.model_type == 'bdcn':
-                    val_bce_loss = ms_bce_loss(val_out, val_labels, args.batch_size, args.model_type, args.side_weight, args.fuse_weight)
-                    val_out = val_out[-1]
+                if args.main_loss_type in ['bce', 'both']:
+                    if args.model_type == 'unet' or args.model_type == 'vit' or args.model_type == 'pvt':
+                        val_bce_loss = cross_entropy_loss2d_sigmoid(val_out, val_labels)
+                    elif args.model_type == 'hed' or args.model_type == 'bdcn':
+                        val_bce_loss = ms_bce_loss(val_out, val_labels, args.batch_size, args.model_type, args.side_weight, args.fuse_weight)
+                        val_out = val_out[-1]
+                else:
+                    val_bce_loss = torch.Tensor([0])
+
+                if args.main_loss_type in ['dice', 'both']:
+                    val_dice_loss = dice(val_out, val_labels)
+                else:
+                    val_dice_loss = torch.Tensor([0])
 
                 val_topo_loss = 0
                 if args.topo_loss_type == 'mosin':
@@ -316,6 +331,8 @@ def train(args):
                     pass
 
                 if args.cuda:
+                    val_bce_loss = val_bce_loss.cuda()
+                    val_dice_loss = val_dice_loss.cuda()
                     val_topo_loss = val_topo_loss.cuda()
 
                 val_out = torch.sigmoid(val_out)
@@ -325,27 +342,31 @@ def train(args):
                     patches_images_ws[global_idx] = fuse_ws
                     global_idx += 1
 
-                val_total_loss = val_bce_loss + val_topo_loss
+                val_total_loss = val_bce_loss + val_dice_loss + val_topo_loss
 
                 val_mean_loss.append(val_total_loss.item())
                 val_mean_bce_loss.append(val_bce_loss.item())
+                val_mean_dice_loss.append(val_dice_loss.item())
                 val_mean_topo_loss.append(val_topo_loss.item())
 
                 # Update the pbar
                 pbar.update(val_img.shape[0])
 
                 # Add loss (batch) value to tqdm
-                pbar.set_postfix(**{'val_total_loss': val_total_loss.item(), 'val_topo_loss': val_topo_loss.item(), 'val_bce_loss': val_bce_loss.item()})
+                pbar.set_postfix(**{'val_total_loss': val_total_loss.item(), 'val_bce_loss': val_bce_loss.item(), 'val_topo_loss': val_topo_loss.item(), 'val_dice_loss': val_dice_loss.item()})
             val_mean_loss = np.mean(val_mean_loss)
             val_bce_loss = np.mean(val_mean_bce_loss)
+            val_dice_loss = np.mean(val_mean_dice_loss)
             val_topo_loss = np.mean(val_mean_topo_loss)
-        logger.info('lr: %e, train_total_loss: %f, train_bce_loss: %f, train_topo_loss: %f, val_total_loss: %f, val_bce_loss: %f, val_topo_loss: %f' %
+        logger.info('lr: %e, train_total_loss: %f, train_bce_loss: %f, train_dice_loss: %f, train_topo_loss: %f, val_total_loss: %f, val_bce_loss: %f, val_dice_loss: %f, val_topo_loss: %f' %
                     (optimizer.param_groups[0]['lr'],
                         torch.from_numpy(np.array(train_mean_loss)).cuda(),
                         torch.from_numpy(np.array(train_bce_loss)).cuda(),
+                        torch.from_numpy(np.array(train_dice_loss)).cuda(),
                         torch.from_numpy(np.array(train_topo_loss)).cuda(),
                         torch.from_numpy(np.array(val_mean_loss)).cuda(),
                         torch.from_numpy(np.array(val_bce_loss)).cuda(),
+                        torch.from_numpy(np.array(val_dice_loss)).cuda(),
                         torch.from_numpy(np.array(val_topo_loss)).cuda(),
                         )
                     )
@@ -395,12 +416,14 @@ def parse_args():
                         help='the file to store log, default is log.txt')
     parser.add_argument('--model_type', type=str, default='unet',
                         help='The type of the model')
+    parser.add_argument('--main_loss_type', type=str, default='bce',
+                        help='The type of the model')
     parser.add_argument('--topo_loss_type', type=str, default=None,
                         help='The type of the model')
-    parser.add_argument('--alpha', type=float, default=50,
+    parser.add_argument('--alpha', type=float, default=100,
                         help='the alpha')
     parser.add_argument('-d', '--dataset', type=str, #choices=cfg.config_BAL_train.keys(),
-                        default='Vltava_SMO', help='The dataset to train')
+                        default='TM25', help='The dataset to train')
     parser.add_argument('--seed', type=int, default=50,
                         help='Seed control.')
     parser.add_argument('--param_dir', type=str, default='params',
@@ -419,13 +442,13 @@ def parse_args():
                         help='the gpu id to train net')
     parser.add_argument('--weight-decay', type=float, default=0.0002,
                         help='the weight_decay of net')
-    parser.add_argument('-r', '--resume', type=str, default=None,
+    parser.add_argument('-r', '--resume', type=str, default=None, #'../training_info/kameny/unet/2025-06-10_22-32-21_lr_0.0001_train_unet_bs_4_both__aug_ctr+aff_inv_dilate/params/topo_best_val_19.pth',
                         help='whether resume from some, default is None')
     parser.add_argument('--model', type=str, default=None,
                         help='Pre-load model')
-    parser.add_argument('--epochs', type=int, default=50,
+    parser.add_argument('--epochs', type=int, default=100,
                         help='Epoch to train network, default is 100')
-    parser.add_argument('--dilation', type=int, default=False,
+    parser.add_argument('--dilation', type=int, default=True,
                         help='Dilate the ground truth by 1px')
     # parser.add_argument('--max-iter', type=int, default=40000,
     #                     help='max iters to train network, default is 40000')

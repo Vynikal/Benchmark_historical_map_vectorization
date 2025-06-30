@@ -21,7 +21,7 @@ def cross_entropy_loss2d(inputs, targets, cuda=True, balance=1.1):
     weights = torch.Tensor(weights)
     if cuda:
         weights = weights.cuda()
-    loss = nn.BCELoss(weights, reduction='sum')(inputs, targets)
+    loss = nn.BCELoss(weights, reduction='mean')(inputs, targets)
     return loss
 
 
@@ -44,6 +44,6 @@ def cross_entropy_loss2d_sigmoid(inputs, targets, cuda=True, balance=1.1):
     if cuda:
         weights = weights.cuda()
     inputs = torch.sigmoid(inputs)
-    loss = nn.BCELoss(weights, reduction='sum')(inputs, targets)
+    loss = nn.BCELoss(weights, reduction='mean')(inputs, targets)
     # loss = torch.nn.BCEWithLogitsLoss(weights, reduction='sum')(inputs, targets)
     return loss
