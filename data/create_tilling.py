@@ -85,6 +85,33 @@ def generate_tiling_gdal(image_path, w_size, mask_path=None, batch_size=1000, ma
     img_height = img_ds.RasterYSize
     num_bands = img_ds.RasterCount
     
+    # **FIX: Detect the actual data type of the source image**
+    first_band = img_ds.GetRasterBand(1)
+    gdal_dtype = first_band.DataType
+    
+    # Map GDAL data types to numpy data types
+    gdal_to_numpy = {
+        gdal.GDT_Byte: np.uint8,
+        gdal.GDT_UInt16: np.uint16,
+        gdal.GDT_Int16: np.int16,
+        gdal.GDT_UInt32: np.uint32,
+        gdal.GDT_Int32: np.int32,
+        gdal.GDT_Float32: np.float32,
+        gdal.GDT_Float64: np.float64,
+        gdal.GDT_CInt16: np.complex64,
+        gdal.GDT_CInt32: np.complex128,
+        gdal.GDT_CFloat32: np.complex64,
+        gdal.GDT_CFloat64: np.complex128
+    }
+    
+    numpy_dtype = gdal_to_numpy.get(gdal_dtype, np.uint8)
+    print(f"Detected image data type: GDAL {gdal.GetDataTypeName(gdal_dtype)} -> NumPy {numpy_dtype}")
+    
+    # Get nodata value if it exists
+    nodata_value = first_band.GetNoDataValue()
+    if nodata_value is not None:
+        print(f"NoData value: {nodata_value}")
+    
     mask_ds = None
     if mask_path:
         mask_ds = gdal.Open(mask_path)
@@ -99,7 +126,9 @@ def generate_tiling_gdal(image_path, w_size, mask_path=None, batch_size=1000, ma
     
     # Calculate total number of tiles and estimate memory requirements
     total_tiles = num_rows * num_cols
-    estimated_tile_size = (win_size * win_size * (num_bands if num_bands > 0 else 1)) / (1024 * 1024)  # in MB
+    # **FIX: Use actual data type size for memory estimation**
+    dtype_size = np.dtype(numpy_dtype).itemsize
+    estimated_tile_size = (win_size * win_size * (num_bands if num_bands > 0 else 1) * dtype_size) / (1024 * 1024)  # in MB
     print(f"Processing {total_tiles} tiles (rows={num_rows}, cols={num_cols})")
     print(f"Estimated memory per tile: ~{estimated_tile_size:.2f} MB")
     
@@ -163,14 +192,18 @@ def generate_tiling_gdal(image_path, w_size, mask_path=None, batch_size=1000, ma
             
             # Process tile with padding as needed
             try:
+                # **FIX: Use detected data type instead of hardcoded uint8**
                 # For 1-band images
                 if num_bands == 1:
-                    # Create full tile
-                    tile_data = np.zeros((win_size, win_size), dtype=np.uint8)
+                    # Create full tile with correct data type
+                    tile_data = np.zeros((win_size, win_size), dtype=numpy_dtype)
                     
                     # Read available data into the correct position in the tile
                     if read_width > 0 and read_height > 0:
                         img_data = img_ds.ReadAsArray(read_x, read_y, read_width, read_height)
+                        # Ensure data type consistency
+                        if img_data.dtype != numpy_dtype:
+                            img_data = img_data.astype(numpy_dtype)
                         tile_data[place_y:place_y + read_height, place_x:place_x + read_width] = img_data
                     
                     # Add padding
@@ -201,14 +234,17 @@ def generate_tiling_gdal(image_path, w_size, mask_path=None, batch_size=1000, ma
                 
                 # For multi-band images
                 else:
-                    # Create full tile
-                    tile_data = np.zeros((win_size, win_size, num_bands), dtype=np.uint8)
+                    # **FIX: Create full tile with correct data type**
+                    tile_data = np.zeros((win_size, win_size, num_bands), dtype=numpy_dtype)
                     
                     # Process one band at a time to reduce memory
                     for band in range(num_bands):
                         if read_width > 0 and read_height > 0:
                             # Read only one band at a time
                             band_data = img_ds.GetRasterBand(band+1).ReadAsArray(read_x, read_y, read_width, read_height)
+                            # **FIX: Ensure data type consistency**
+                            if band_data.dtype != numpy_dtype:
+                                band_data = band_data.astype(numpy_dtype)
                             tile_data[place_y:place_y + read_height, place_x:place_x + read_width, band] = band_data
                             # Free memory immediately
                             del band_data
@@ -227,7 +263,6 @@ def generate_tiling_gdal(image_path, w_size, mask_path=None, batch_size=1000, ma
                             for i in range(place_y):
                                 tile_data[i, :, band] = tile_data[place_y, :, band]
                         
-                        # FIX: Added missing ':' for column indexing in bottom padding
                         bottom_edge = place_y + read_height
                         if bottom_edge < win_size:
                             for i in range(bottom_edge, win_size):
@@ -274,12 +309,13 @@ def generate_tiling_gdal(image_path, w_size, mask_path=None, batch_size=1000, ma
     if mask_ds:
         mask_ds = None
     
-    # Create a wrapper class to handle tile loading
+    # **FIX: Store data type in metadata for the dataset class**
     class DiskTileDataset:
-        def __init__(self, metadata_file, win_size):
+        def __init__(self, metadata_file, win_size, numpy_dtype):
             with open(metadata_file, 'rb') as f:
                 self.tile_metadata = pickle.load(f)
             self.win_size = win_size
+            self.numpy_dtype = numpy_dtype  # Store the data type
             self.temp_dir = os.path.dirname(metadata_file)
             
         def __len__(self):
@@ -287,7 +323,11 @@ def generate_tiling_gdal(image_path, w_size, mask_path=None, batch_size=1000, ma
             
         def __getitem__(self, idx):
             row, col, tile_path = self.tile_metadata[idx]
-            return np.load(tile_path)
+            tile_data = np.load(tile_path)
+            # Ensure correct data type (safety check)
+            if tile_data.dtype != self.numpy_dtype:
+                tile_data = tile_data.astype(self.numpy_dtype)
+            return tile_data
             
         def get_patch_positions(self):
             # Return row, col pairs just like generate_tiling does
@@ -302,8 +342,8 @@ def generate_tiling_gdal(image_path, w_size, mask_path=None, batch_size=1000, ma
             except Exception as e:
                 print(f"Warning: Could not clean up {self.temp_dir}: {e}")
     
-    print(f"Successfully processed and stored {tile_counter} tiles")
-    return DiskTileDataset(metadata_file, win_size)
+    print(f"Successfully processed and stored {tile_counter} tiles with data type {numpy_dtype}")
+    return DiskTileDataset(metadata_file, win_size, numpy_dtype)
 
 def main():
     parser = argparse.ArgumentParser(description='Create Tillings.')

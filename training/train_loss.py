@@ -15,6 +15,7 @@ import datetime
 from tqdm.auto import tqdm
 import yaml
 import cv2
+import glob
 
 # Import dataloader
 from data.smart_data_loader import Data
@@ -43,6 +44,51 @@ from loss.path_loss.p_loss import Path_loss
 from utils import log
 from utils.reconstruct_tiling_dict import reconstruct_from_patches, save_random_chips
 
+
+def create_multi_raster_dataset(data_dir, w_size, data_aug=None, aug_mode=None, dilation=False, mode='loss'):
+    """
+    Create a combined dataset from multiple raster files in a directory
+    """
+    # Find all .tif files that don't end with _GT.tif or _mask.tif
+    image_files = sorted([f for f in glob.glob(os.path.join(data_dir, "*.tif")) 
+                         if not f.endswith("_GT.tif") and not f.endswith("_mask.tif")])
+    
+    if not image_files:
+        raise ValueError(f"No training images found in {data_dir}")
+    
+    print(f"Found {len(image_files)} training images in {data_dir}")
+    
+    datasets = []
+    for img_path in image_files:
+        # Construct corresponding GT path
+        base_name = os.path.splitext(img_path)[0]
+        gt_path = f"{base_name}_GT.tif"
+        
+        if not os.path.exists(gt_path):
+            print(f"Warning: GT file not found for {img_path}, skipping...")
+            continue
+        
+        # Construct corresponding mask path (optional)
+        mask_path = f"{base_name}_mask.tif"
+        if not os.path.exists(mask_path):
+            mask_path = None  # Mask is optional
+        
+        if mask_path:
+            print(f"Loading: {os.path.basename(img_path)} -> {os.path.basename(gt_path)} -> {os.path.basename(mask_path)}")
+        else:
+            print(f"Loading: {os.path.basename(img_path)} -> {os.path.basename(gt_path)} (no mask)")
+        
+        # Create individual dataset
+        dataset = Data(img_path, gt_path, w_size, data_aug, aug_mode=aug_mode, 
+                      dilation=dilation, mode=mode, mask_path=mask_path)
+        datasets.append(dataset)
+    
+    if not datasets:
+        raise ValueError("No valid image-GT pairs found")
+    
+    # Combine all datasets
+    combined_dataset = torch.utils.data.ConcatDataset(datasets)
+    return combined_dataset, datasets[0].get_patch_positions() if datasets else None
 
 def train(args):
     # Initialize the model 
@@ -106,21 +152,34 @@ def train(args):
     else:
         data_aug_stat = 'no_aug'
 
-    train_img_path = 'dataset/TM/Train.tif'
-    train_gt_path  = 'dataset/TM/Train_GT2.tif'
-    # train_mask_path = 'dataset/TM/Train3_mask.tif'
-    train_img = Data(train_img_path, train_gt_path, w_size, args.data_aug, aug_mode=aug_mode, dilation=args.dilation, mode='loss', mask_path=None)
-    trainloader = torch.utils.data.DataLoader(train_img, batch_size=args.batch_size, shuffle=True, num_workers=0, pin_memory=True) # WARNING: SHUFFLE MUST BE TRUE TO PREVENT HUGE OVERFIT
+    # Multi-raster training from directory
+    print(f"Loading training data from directory: {args.train_data_dir}")
+    train_dataset, _ = create_multi_raster_dataset(
+        args.train_data_dir, w_size, args.data_aug, 
+        aug_mode=aug_mode, dilation=args.dilation, mode='loss'
+    )
+    trainloader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=args.batch_size, shuffle=True, 
+        num_workers=0, pin_memory=True
+    )
     n_train = len(trainloader)
 
-    # Validation evaluation
-    val_img_path = 'dataset/TM/Val.tif'
-    val_gt_path  = 'dataset/TM/Val_GT2.tif'
-    # val_mask_path = 'dataset/Val3_mask.tif'
-    val_img = Data(val_img_path, val_gt_path, w_size, data_aug=None, dilation=args.dilation, mode='loss', mask_path=None)
-    val_img_pos = val_img.get_patch_positions()
-    valloader = torch.utils.data.DataLoader(val_img, batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=True)
+    print(f"Loading validation data from directory: {args.val_data_dir}")
+    val_dataset, val_img_pos = create_multi_raster_dataset(
+        args.val_data_dir, w_size, data_aug=None, 
+        dilation=args.dilation, mode='loss'
+    )
+    valloader = torch.utils.data.DataLoader(
+        val_dataset, batch_size=args.batch_size, shuffle=False, 
+        num_workers=0, pin_memory=True
+    )
     n_val = len(valloader)
+    
+    # For reconstruction, use the first validation image
+    val_files = sorted([f for f in glob.glob(os.path.join(args.val_data_dir, "*.tif")) 
+                       if not f.endswith("_GT.tif")])
+    val_img_path = val_files[0] if val_files else None
+
 
     # Change it to adam optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=args.base_lr, weight_decay=args.weight_decay)
@@ -169,9 +228,25 @@ def train(args):
     if not os.path.exists(chips_dir):
         os.makedirs(chips_dir)
 
-    # Save random chips from both datasets
-    save_random_chips(train_img, chips_dir, 'train', num_chips=50)
-    save_random_chips(val_img, chips_dir, 'val', num_chips=20)
+    # Save random chips from datasets
+    # For multi-raster, sample from the combined dataset
+    # Create a temporary single dataset for chip saving
+    train_files = sorted([f for f in glob.glob(os.path.join(args.train_data_dir, "*.tif")) 
+                         if not f.endswith("_GT.tif")])
+    if train_files:
+        temp_train = Data(train_files[0], train_files[0].replace('.tif', '_GT.tif'), 
+                         w_size, args.data_aug, aug_mode=aug_mode, 
+                         dilation=args.dilation, mode='loss', mask_path=None)
+        save_random_chips(temp_train, chips_dir, 'train', num_chips=50)
+    
+    if args.val_data_dir:
+        val_files = sorted([f for f in glob.glob(os.path.join(args.val_data_dir, "*.tif")) 
+                           if not f.endswith("_GT.tif")])
+        if val_files:
+            temp_val = Data(val_files[0], val_files[0].replace('.tif', '_GT.tif'), 
+                           w_size, data_aug=None, dilation=args.dilation, 
+                           mode='loss', mask_path=None)
+            save_random_chips(temp_val, chips_dir, 'val', num_chips=20)
 
 
     epochs = args.epochs
@@ -371,16 +446,16 @@ def train(args):
                         )
                     )
 
-        in_img = cv2.imread(val_img_path)
-        pad_px = w_size // 2
-        new_img = reconstruct_from_patches(patches_images_ws, w_size, pad_px, in_img.shape, np.float32, val_img_pos)
-        tile_save_image_path_ws = os.path.join('.', recon_save_path, str(epoch) + '_{}_reconstruct.png'.format(int(np.array(val_mean_loss))))
+        # in_img = cv2.imread(val_img_path)
+        # pad_px = w_size // 2
+        # new_img = reconstruct_from_patches(patches_images_ws, w_size, pad_px, in_img.shape, np.float32, val_img_pos)
+        # tile_save_image_path_ws = os.path.join('.', recon_save_path, str(epoch) + '_{}_reconstruct.png'.format(int(np.array(val_mean_loss))))
 
-        new_img = (new_img*255).astype(np.uint8)
-        # BOD = cv2.imread(args.val_EPM_border, 0)
-        # new_img[BOD == 255] = 255
+        # new_img = (new_img*255).astype(np.uint8)
+        # # BOD = cv2.imread(args.val_EPM_border, 0)
+        # # new_img[BOD == 255] = 255
 
-        cv2.imwrite(tile_save_image_path_ws, new_img)
+        # cv2.imwrite(tile_save_image_path_ws, new_img)
         torch.save(model.state_dict(), '{}/topo_best_val_{}.pth'.format(parm_save_path, str(epoch)))  # Save best weight
 
         # Learning rate schedular to change learning
@@ -423,7 +498,7 @@ def parse_args():
     parser.add_argument('--alpha', type=float, default=100,
                         help='the alpha')
     parser.add_argument('-d', '--dataset', type=str, #choices=cfg.config_BAL_train.keys(),
-                        default='TM25', help='The dataset to train')
+                        default='BOTH', help='The dataset to train')
     parser.add_argument('--seed', type=int, default=50,
                         help='Seed control.')
     parser.add_argument('--param_dir', type=str, default='params',
@@ -442,13 +517,13 @@ def parse_args():
                         help='the gpu id to train net')
     parser.add_argument('--weight-decay', type=float, default=0.0002,
                         help='the weight_decay of net')
-    parser.add_argument('-r', '--resume', type=str, default=None, #'../training_info/kameny/unet/2025-06-10_22-32-21_lr_0.0001_train_unet_bs_4_both__aug_ctr+aff_inv_dilate/params/topo_best_val_19.pth',
+    parser.add_argument('-r', '--resume', type=str, default='../training_info/BOTH/unet/jpg30_2025-10-14_10-40-16_lr_0.0001_train_unet_bs_4_bce__aug_ctr+aff/params/topo_best_val_96.pth',
                         help='whether resume from some, default is None')
     parser.add_argument('--model', type=str, default=None,
                         help='Pre-load model')
-    parser.add_argument('--epochs', type=int, default=100,
+    parser.add_argument('--epochs', type=int, default=3,
                         help='Epoch to train network, default is 100')
-    parser.add_argument('--dilation', type=int, default=True,
+    parser.add_argument('--dilation', type=int, default=False,
                         help='Dilate the ground truth by 1px')
     # parser.add_argument('--max-iter', type=int, default=40000,
     #                     help='max iters to train network, default is 40000')
@@ -503,6 +578,12 @@ def parse_args():
     parser.add_argument('--mu', type=float, default=10,
 						help='loss coeff for vgg features')
 
+    # Add new arguments for multi-raster training
+    parser.add_argument('--train_data_dir', type=str, default='dataset/TM/Train_jpg30/',
+                        help='Directory containing training .tif files and corresponding _GT.tif files')
+    parser.add_argument('--val_data_dir', type=str, default='dataset/TM/Val_jpg30/',
+                        help='Directory containing validation .tif files and corresponding _GT.tif files')
+    
     return parser.parse_args()
 
 

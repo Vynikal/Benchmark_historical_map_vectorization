@@ -20,44 +20,83 @@ def transformation(img, targets, mode):
     return img, targets
 
 def random_contrast(img, low=0.8, high=1.25, beta=0):
-    # Current we don't augmentation the brightness but only contrast
+    """Bit-depth agnostic contrast augmentation"""
     alpha = np.random.uniform(low, high)
-    img = cv2.convertScaleAbs(img, alpha=alpha, beta=beta)
+    
+    # Preserve original data type
+    original_dtype = img.dtype
+    
+    # Convert to float for processing to avoid overflow/clipping
+    if img.dtype in [np.uint8, np.uint16]:
+        # For integer types, normalize to [0,1] first
+        if img.dtype == np.uint8:
+            img_float = img.astype(np.float32) / 255.0
+        elif img.dtype == np.uint16:
+            img_float = img.astype(np.float32) / 65535.0
+        else:
+            img_float = img.astype(np.float32)
+            
+        # Apply contrast
+        img_float = np.clip(alpha * img_float + beta, 0.0, 1.0)
+        
+        # Convert back to original range
+        if original_dtype == np.uint8:
+            img = (img_float * 255.0).astype(np.uint8)
+        elif original_dtype == np.uint16:
+            img = (img_float * 65535.0).astype(np.uint16)
+    else:
+        # For float types, apply directly
+        img = np.clip(alpha * img.astype(np.float32) + beta, 0.0, 1.0).astype(original_dtype)
+    
     return img
 
 
 def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10, border=0):
-	if targets is None:  # targets = [cls, xyxy]
-		targets = []
-	height = img.shape[0] + border * 2
-	width = img.shape[1] + border * 2
+    if targets is None:
+        targets = []
+    
+    # Store original data type
+    original_dtype = img.dtype
+    
+    height = img.shape[0] + border * 2
+    width = img.shape[1] + border * 2
 
-	# Rotation and Scale
-	R = np.eye(3)
-	a = random.uniform(-degrees, degrees)
-	# a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
-	s = random.uniform(1 - scale, 1 + scale)
-	R[:2] = cv2.getRotationMatrix2D(angle=a, center=(img.shape[1] / 2, img.shape[0] / 2), scale=s)
+    # Rotation and Scale
+    R = np.eye(3)
+    a = random.uniform(-degrees, degrees)
+    s = random.uniform(1 - scale, 1 + scale)
+    R[:2] = cv2.getRotationMatrix2D(angle=a, center=(img.shape[1] / 2, img.shape[0] / 2), scale=s)
 
-	# Translation
-	T = np.eye(3)
-	T[0, 2] = random.uniform(-translate, translate) * img.shape[0] + border  # x translation (pixels)
-	T[1, 2] = random.uniform(-translate, translate) * img.shape[1] + border  # y translation (pixels)
+    # Translation
+    T = np.eye(3)
+    T[0, 2] = random.uniform(-translate, translate) * img.shape[0] + border
+    T[1, 2] = random.uniform(-translate, translate) * img.shape[1] + border
 
-	# Shear
-	S = np.eye(3)
-	S[0, 1] = math.tan(random.uniform(-shear, shear) * math.pi / 180)  # x shear (deg)
-	S[1, 0] = math.tan(random.uniform(-shear, shear) * math.pi / 180)  # y shear (deg)
+    # Shear
+    S = np.eye(3)
+    S[0, 1] = math.tan(random.uniform(-shear, shear) * math.pi / 180)
+    S[1, 0] = math.tan(random.uniform(-shear, shear) * math.pi / 180)
 
-	# Combined rotation matrix
-	M = S @ T @ R  # ORDER IS IMPORTANT HERE!!
-	if (border != 0) or (M != np.eye(3)).any():  # image changed
-		img     = cv2.warpAffine(img,     M[:2], dsize=(width, height), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0))
-		targets = cv2.warpAffine(targets, M[:2], dsize=(width, height), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0))
-	return img, targets
+    # Combined rotation matrix
+    M = S @ T @ R
+    if (border != 0) or (M != np.eye(3)).any():
+        # **FIX: Preserve data type with explicit dtype parameter**
+        img = cv2.warpAffine(img, M[:2], dsize=(width, height), 
+                           flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0))
+        # Ensure output matches input type
+        img = img.astype(original_dtype)
+        
+        if len(targets) > 0:
+            targets = cv2.warpAffine(targets, M[:2], dsize=(width, height), 
+                                   flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0))
+    
+    return img, targets
 
 
 def random_homography(img, targets, random_t_tps=0.5):
+    # Store original data type
+    original_dtype = img.dtype
+    
     x_max, y_max = img.shape[0: 2]
     X = np.array([0, 0, x_max, 0, y_max, x_max, 0, y_max])
     Y = X + (np.random.rand(8)-0.5) * x_max * random_t_tps
@@ -73,14 +112,8 @@ def random_homography(img, targets, random_t_tps=0.5):
         A[2 * i + 1] = np.stack([0, 0, 0, -x, -y, -1, x*y_, y*y_, y_])
 
     A = np.matrix(A)
-
-    #svd compositionq
     u, s, v = np.linalg.svd(A)
-    
-    # Reshape the min singular value into a 3 by 3 matrix
     H21 = np.reshape(v[8], (3, 3))
-
-    # Normalization of H33
     H21 = (1/H21[2,2]) * H21
 
     if len(img.shape) == 3:
@@ -88,9 +121,15 @@ def random_homography(img, targets, random_t_tps=0.5):
     else:
         x, y = img.shape
 
-    img     = cv2.warpPerspective(img, H21, (x, y))
-    targets = cv2.warpPerspective(targets, H21, (x, y))
+    # **FIX: Preserve data type**
+    img = cv2.warpPerspective(img, H21, (x, y))
+    img = img.astype(original_dtype)
+    
+    if len(targets) > 0:
+        targets = cv2.warpPerspective(targets, H21, (x, y))
+    
     return img, targets
+
 
 def random_tps(img, targets):
     # creat control points
@@ -213,8 +252,14 @@ def tps_grid_to_remap(grid, sshape):
     return mx, my
 
 def warp_image_cv(img, c_src, c_dst, dshape=None):
+    # Store original data type
+    original_dtype = img.dtype
+    
     dshape = dshape or img.shape
     theta = tps_theta_from_points(c_src, c_dst, reduced=True)
     grid = tps_grid(theta, c_dst, dshape)
     mapx, mapy = tps_grid_to_remap(grid, img.shape)
-    return cv2.remap(img, mapx, mapy, cv2.INTER_CUBIC)
+    
+    # **FIX: Preserve data type**
+    result = cv2.remap(img, mapx, mapy, cv2.INTER_CUBIC)
+    return result.astype(original_dtype)

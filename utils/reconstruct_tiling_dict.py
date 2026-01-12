@@ -163,12 +163,14 @@ def save_random_chips(dataset, save_path, prefix, num_chips=5):
             img, pos = dataset[idx]
             # Convert from tensor to numpy
             img = img.numpy().transpose(1,2,0) * 255
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
             img = img.astype(np.uint8)
             cv2.imwrite(os.path.join(save_path, f'{prefix}_chip_{i}_r{pos[0]}_c{pos[1]}.png'), img)
         else:
             img, labels = dataset[idx]
             # Convert from tensor to numpy
             img = img.numpy().transpose(1,2,0) * 255
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
             img = img.astype(np.uint8)
             if isinstance(labels, dict):
                 labels = labels['labels'].numpy()[0] * 255

@@ -144,7 +144,7 @@ def main():
         model = UNET(n_channels=args.channels, n_classes=args.classes)
         model.load_state_dict(torch.load('%s' % (args.model)))
         print('Load model {}'.format(args.model))
-        win_size = 512
+        win_size = 500
     elif args.model_type == 'mini-unet':
         model = UNET(n_channels=args.channels, n_classes=args.classes, mode='mini')
         model.load_state_dict(torch.load('%s' % (args.model)))
@@ -222,11 +222,15 @@ def main():
         batch_size=100  # Process 100 patches at a time to manage memory
     )
 
+    # Initialize these variables before any conditional blocks
+    base_filename = f"{str(args.model_type)}_test"
+    tile_save_image_path = os.path.join(output_dir, f"{base_filename}.tif")
+    mask_applied = False
+
     # If you have ground truth, evaluate the edge prediction before saving
     if args.gt_edge_path and os.path.exists(args.gt_edge_path):
         print("Evaluating edge prediction against ground truth...")
-        # Create output file
-        base_filename = f"{str(args.model_type)}_test"
+        # The base_filename is already defined above
         
         # Load ground truth edge map
         gt_edge = cv2.imread(args.gt_edge_path, cv2.IMREAD_GRAYSCALE)
@@ -264,11 +268,8 @@ def main():
             reconstructed_bg = reconstructed_bg * mask
             tile_save_image_path = os.path.join(output_dir, f"{base_filename}_masked.tif")
             mask_applied = True
-        else:
-            # No mask, use the full prediction
-            tile_save_image_path = os.path.join(output_dir, f"{base_filename}.tif")
-            mask_applied = False
-        
+        # No need for an else clause since we've already set default values above
+    
         # Convert to boolean
         gt_bool = (gt_edge > 0.5).astype(bool)
         gt_bool_bg = (gt_bg > 0.5).astype(bool)
@@ -582,7 +583,7 @@ def parse_args():
                         help='whether use gpu to train network')
     parser.add_argument('-g', '--gpu', type=str, default='0',
                         help='the gpu id to train net')
-    parser.add_argument('-m', '--model', type=str, default='../training_info/kameny/unet/2025-06-09_20-09-18_lr_0.0001_train_unet_bs_4_dice__aug_ctr+aff_inv_dilate/params/topo_best_val_97.pth',
+    parser.add_argument('-m', '--model', type=str, default='../training_info/Vltava_SMO/unet/2025-02-12_17-34-41_lr_0.0001_train_unet_bs_4_aug_ctr+aff_hard_thindilate_baloss50/params/topo_best_val_49.pth',
                         help='the model to test')
 
     parser.add_argument('--channels', type=int, default=3,
@@ -604,9 +605,9 @@ def parse_args():
     parser.add_argument('--mu', type=float, default=10,
 						help='loss coeff for vgg features')
 
-    parser.add_argument('--input_map_path', type=str, default='dataset/Test3.tif', #dataset/Vltava_SMO/raster_hard_test2.jpg',#'dataset/SMO5_inference/SMO5_1980.tif',#
+    parser.add_argument('--input_map_path', type=str, default='dataset/Vltava_SMO/raster_hard_test2.jpg', #dataset/Vltava_SMO/raster_hard_test2.jpg',#'dataset/SMO5_inference/SMO5_1980.tif',#
                         help='Input map image.')
-    parser.add_argument('--input_mask_path', type=str, default='dataset/Test3_mask.tif',#'dataset/Vltava_SMO/mask_1980.tif',#
+    parser.add_argument('--input_mask_path', type=str, default=None, #'dataset/Test3_mask.tif',#'dataset/Vltava_SMO/mask_1980.tif',#
                         help='Input map image.')
     
     parser.add_argument('--invert_label_map', action='store_true', default=False,
@@ -616,7 +617,7 @@ def parse_args():
     parser.add_argument('--threshold', action='store_true', default=0.5,
                         help='CC thresholding')
     
-    parser.add_argument('--gt_edge_path', type=str, default='dataset/Test3_GT_inv.tif',
+    parser.add_argument('--gt_edge_path', type=str, default=None,
                         help='Path to ground truth edge ZZmap for evaluation')
     
     return parser.parse_args()
