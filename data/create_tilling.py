@@ -12,44 +12,46 @@ def generate_tiling(image_path, w_size, mask_path=None):
 
     # Read image
     in_img = np.array(Image.open(image_path))
+    is_grayscale = len(in_img.shape) == 2
 
-    msk_bg = None
+    # Pad image once
+    if is_grayscale:
+        img_pad = np.pad(in_img, [(pad_px,pad_px), (pad_px,pad_px)], 'edge')
+    else:
+        img_pad = np.pad(in_img, [(pad_px,pad_px), (pad_px,pad_px), (0,0)], 'edge')
+
+    # Handle mask if provided
+    mask_tiles = None
     if mask_path:
         msk_bg = np.array(Image.open(mask_path))
         if msk_bg is None:
             raise ValueError(f"Mask file {mask_path} cannot be read")
         if msk_bg.shape != in_img.shape[:2]:
             raise ValueError(f"GT and mask shapes don't match: {in_img.shape[:2]} vs {msk_bg.shape}")
-        # Create boolean mask (0=masked) and pad it same as image
-        msk_bg = msk_bg == 0
+        # Create boolean mask (0=masked) and pad it
+        msk_bg = (msk_bg == 0).astype(np.uint8)
         msk_bg = np.pad(msk_bg, [(pad_px,pad_px), (pad_px,pad_px)], 'edge')
-        mask_tiles = view_as_windows(msk_bg, (win_size,win_size), step=pad_px) if msk_bg is not None else None
+        mask_tiles = view_as_windows(msk_bg, (win_size,win_size), step=pad_px)
 
-    if len(in_img.shape) == 2:
-        img_pad = np.pad(in_img, [(pad_px,pad_px), (pad_px,pad_px)], 'edge')
+    # Create tiles view
+    if is_grayscale:
         tiles = view_as_windows(img_pad, (win_size,win_size), step=pad_px)
     else:
-        img_pad = np.pad(in_img, [(pad_px,pad_px), (pad_px,pad_px), (0,0)], 'edge')
         tiles = view_as_windows(img_pad, (win_size,win_size,3), step=pad_px)
+    
     tiles_lst = []
-    tile_positions = []  # Track positions of valid tiles
+    tile_positions = []
+    
     for row in range(tiles.shape[0]):
         for col in range(tiles.shape[1]):
             # Check mask if provided
-            if mask_path is not None:
-                mask_tile = mask_tiles[row, col]
-                # Skip tile if any part is masked
-                masked_ratio = np.mean(mask_tile)
-                if masked_ratio > 0:
-                    continue
-                
-            if len(in_img.shape) == 2:
-                tt = tiles[row, col, ...].copy()
-            else:
-                tt = tiles[row, col, 0, ...].copy()
+            if mask_path is not None and np.any(mask_tiles[row, col]):
+                continue
             
+            # Extract tile (view_as_windows returns views, need copy for modifications)
+            tt = tiles[row, col, 0, ...].copy() if not is_grayscale else tiles[row, col, ...].copy()
             tiles_lst.append(tt)
-            tile_positions.append((row, col))  # Store position of valid tile
+            tile_positions.append((row, col))
             
     return tiles_lst, tile_positions
 
@@ -133,7 +135,6 @@ def generate_tiling_gdal(image_path, w_size, mask_path=None, batch_size=1000, ma
     print(f"Estimated memory per tile: ~{estimated_tile_size:.2f} MB")
     
     # Pre-calculate all tile positions and save to disk to reduce memory usage
-    # This allows us to process chunks without holding all positions in memory
     all_positions = []
     for row in range(num_rows):
         for col in range(num_cols):
@@ -154,26 +155,27 @@ def generate_tiling_gdal(image_path, w_size, mask_path=None, batch_size=1000, ma
     # Save positions to disk and free memory
     with open(position_file, 'wb') as f:
         pickle.dump(all_positions, f)
+    total_positions = len(all_positions)
     del all_positions
     gc.collect()
     
-    # Process tiles in batches to limit memory usage
-    with open(position_file, 'rb') as f:
-        all_positions = pickle.load(f)
-    
     # Process tiles in chunks
-    chunk_size = min(batch_size, max(1, int(max_memory_mb // estimated_tile_size * 2)))
-    print(f"Processing tiles in chunks of {chunk_size} to conserve memory")
+    chunk_size = min(batch_size, max(1, int(max_memory_mb // estimated_tile_size * 0.5)))
+    print(f"Processing {total_positions} valid tiles in chunks of {chunk_size} to conserve memory")
     
     tile_counter = 0
-    for chunk_start in range(0, len(all_positions), chunk_size):
-        # Get current memory usage
-        mem_info = psutil.Process(os.getpid()).memory_info()
-        print(f"Memory usage: {mem_info.rss / (1024 * 1024):.2f} MB")
+    for chunk_start in range(0, total_positions, chunk_size):
+        # Load only the positions needed for this chunk
+        chunk_end = min(chunk_start + chunk_size, total_positions)
         
-        # Process a chunk of tiles
-        chunk_end = min(chunk_start + chunk_size, len(all_positions))
-        chunk = all_positions[chunk_start:chunk_end]
+        with open(position_file, 'rb') as f:
+            all_positions = pickle.load(f)
+            chunk = all_positions[chunk_start:chunk_end]
+            del all_positions
+        
+        if chunk_start % (chunk_size * 10) == 0:  # Log every 10 chunks
+            mem_info = psutil.Process(os.getpid()).memory_info()
+            print(f"Processing tiles {chunk_start}-{chunk_end}/{total_positions}, Memory: {mem_info.rss / (1024 * 1024):.1f} MB")
         
         for row, col, read_x, read_y, read_width, read_height, place_x, place_y in chunk:
             # Check mask if provided
@@ -192,81 +194,51 @@ def generate_tiling_gdal(image_path, w_size, mask_path=None, batch_size=1000, ma
             
             # Process tile with padding as needed
             try:
-                # **FIX: Use detected data type instead of hardcoded uint8**
-                # For 1-band images
-                if num_bands == 1:
-                    # Create full tile with correct data type
-                    tile_data = np.zeros((win_size, win_size), dtype=numpy_dtype)
+                # Read the data for this tile region
+                if read_width > 0 and read_height > 0:
+                    # Read all bands at once for efficiency
+                    img_data = img_ds.ReadAsArray(read_x, read_y, read_width, read_height)
                     
-                    # Read available data into the correct position in the tile
-                    if read_width > 0 and read_height > 0:
-                        img_data = img_ds.ReadAsArray(read_x, read_y, read_width, read_height)
-                        # Ensure data type consistency
-                        if img_data.dtype != numpy_dtype:
-                            img_data = img_data.astype(numpy_dtype)
-                        tile_data[place_y:place_y + read_height, place_x:place_x + read_width] = img_data
+                    # Ensure correct data type
+                    if img_data.dtype != numpy_dtype:
+                        img_data = img_data.astype(numpy_dtype)
                     
-                    # Add padding
-                    # Left padding if needed
-                    if place_x > 0:
-                        for i in range(place_x):
-                            tile_data[:, i] = tile_data[:, place_x]
+                    # Handle band organization (GDAL returns bands-first for multi-band)
+                    if num_bands == 1:
+                        if len(img_data.shape) == 2:
+                            tile_core = img_data
+                        else:
+                            tile_core = img_data[0]  # Single band case
+                    else:
+                        # Multi-band: transpose from (bands, h, w) to (h, w, bands)
+                        tile_core = np.transpose(img_data, (1, 2, 0))
                     
-                    # Right padding if needed
-                    right_edge = place_x + read_width
-                    if right_edge < win_size:
-                        for i in range(right_edge, win_size):
-                            tile_data[:, i] = tile_data[:, right_edge-1]
+                    # Calculate padding amounts
+                    pad_top = place_y
+                    pad_bottom = win_size - (place_y + read_height)
+                    pad_left = place_x
+                    pad_right = win_size - (place_x + read_width)
                     
-                    # Top padding if needed
-                    if place_y > 0:
-                        for i in range(place_y):
-                            tile_data[i, :] = tile_data[place_y, :]
+                    # Apply edge padding efficiently using np.pad
+                    if num_bands == 1:
+                        tile_data = np.pad(tile_core, 
+                                         ((pad_top, pad_bottom), (pad_left, pad_right)), 
+                                         mode='edge').astype(numpy_dtype)
+                        # Add channel dimension for consistency
+                        tile_data = np.expand_dims(tile_data, axis=2)
+                    else:
+                        tile_data = np.pad(tile_core, 
+                                         ((pad_top, pad_bottom), (pad_left, pad_right), (0, 0)), 
+                                         mode='edge').astype(numpy_dtype)
                     
-                    # Bottom padding if needed
-                    bottom_edge = place_y + read_height
-                    if bottom_edge < win_size:
-                        for i in range(bottom_edge, win_size):
-                            tile_data[i, :] = tile_data[bottom_edge-1, :]
-                    
-                    # Add channel dimension for consistency
-                    tile_data = np.expand_dims(tile_data, axis=2)
-                
-                # For multi-band images
+                    # Clean up
+                    del img_data, tile_core
                 else:
-                    # **FIX: Create full tile with correct data type**
-                    tile_data = np.zeros((win_size, win_size, num_bands), dtype=numpy_dtype)
-                    
-                    # Process one band at a time to reduce memory
-                    for band in range(num_bands):
-                        if read_width > 0 and read_height > 0:
-                            # Read only one band at a time
-                            band_data = img_ds.GetRasterBand(band+1).ReadAsArray(read_x, read_y, read_width, read_height)
-                            # **FIX: Ensure data type consistency**
-                            if band_data.dtype != numpy_dtype:
-                                band_data = band_data.astype(numpy_dtype)
-                            tile_data[place_y:place_y + read_height, place_x:place_x + read_width, band] = band_data
-                            # Free memory immediately
-                            del band_data
-                        
-                        # Padding for this band
-                        if place_x > 0:
-                            for i in range(place_x):
-                                tile_data[:, i, band] = tile_data[:, place_x, band]
-                        
-                        right_edge = place_x + read_width
-                        if right_edge < win_size:
-                            for i in range(right_edge, win_size):
-                                tile_data[:, i, band] = tile_data[:, right_edge-1, band]
-                        
-                        if place_y > 0:
-                            for i in range(place_y):
-                                tile_data[i, :, band] = tile_data[place_y, :, band]
-                        
-                        bottom_edge = place_y + read_height
-                        if bottom_edge < win_size:
-                            for i in range(bottom_edge, win_size):
-                                tile_data[i, :, band] = tile_data[bottom_edge-1, :, band]
+                    # Edge case: no valid data to read
+                    if num_bands == 1:
+                        tile_data = np.zeros((win_size, win_size, 1), dtype=numpy_dtype)
+                    else:
+                        tile_data = np.zeros((win_size, win_size, num_bands), dtype=numpy_dtype)
                 
                 # Save tile to disk
                 tile_file = os.path.join(temp_dir, f"tile_{tile_counter:08d}.npy")
@@ -315,7 +287,7 @@ def generate_tiling_gdal(image_path, w_size, mask_path=None, batch_size=1000, ma
             with open(metadata_file, 'rb') as f:
                 self.tile_metadata = pickle.load(f)
             self.win_size = win_size
-            self.numpy_dtype = numpy_dtype  # Store the data type
+            self.numpy_dtype = numpy_dtype
             self.temp_dir = os.path.dirname(metadata_file)
             
         def __len__(self):
@@ -332,6 +304,13 @@ def generate_tiling_gdal(image_path, w_size, mask_path=None, batch_size=1000, ma
         def get_patch_positions(self):
             # Return row, col pairs just like generate_tiling does
             return [(row, col) for row, col, _ in self.tile_metadata]
+        
+        def __enter__(self):
+            return self
+        
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            self.cleanup()
+            return False
             
         def cleanup(self):
             """Remove temporary files"""

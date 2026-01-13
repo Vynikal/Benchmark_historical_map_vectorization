@@ -51,14 +51,18 @@ class Data(data.Dataset):
             img = self.image_path[index]
             
         if self.unseen:
-            img = img / 255.
+            # Normalize based on data type
+            img_max = np.iinfo(img.dtype).max if np.issubdtype(img.dtype, np.integer) else img.max()
+            img = img / img_max
             img = np.array(img, dtype=np.float32)
             img = np.transpose(img, (2, 0, 1))
             img = torch.from_numpy(img).float()
-            return img
+            return img, self.patch_pos[index]
 
         labels = self.gt_path[index].squeeze()
-        labels = labels/255.
+        # Normalize labels based on data type
+        labels_max = np.iinfo(labels.dtype).max if np.issubdtype(labels.dtype, np.integer) else labels.max()
+        labels = labels / labels_max
         labels = labels.astype(np.uint8)
 
         if self.dilation:
@@ -68,7 +72,9 @@ class Data(data.Dataset):
         if self.data_aug:
             img, labels = transformation(img, labels, self.aug_mode)
             
-        img = img / 255.
+        # Normalize image based on data type
+        img_max = np.iinfo(img.dtype).max if np.issubdtype(img.dtype, np.integer) else img.max()
+        img = img / img_max
         img = np.array(img, dtype=np.float32)
         img = np.transpose(img, (2, 0, 1))
         img = torch.from_numpy(img).float()
