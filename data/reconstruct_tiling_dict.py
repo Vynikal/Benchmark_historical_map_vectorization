@@ -1,6 +1,5 @@
 import numpy as np
 import cv2
-import argparse
 import os
 from tempfile import mkdtemp
 

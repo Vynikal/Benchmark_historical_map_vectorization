@@ -9,28 +9,20 @@ import pandas as pd
 from pathlib import Path
 import cv2
 from tqdm import tqdm
-from PIL import Image
-Image.MAX_IMAGE_PIXELS = 1000000000
 
 from scipy import ndimage
 from scipy.ndimage.morphology import binary_dilation
 
 # Import dataloader
 from data.smart_data_loader import Data
+from data.reconstruct_tiling_dict import reconstruct_from_patches
 
 # Import model
 from model.unet import UNET
 
-# Import Utils
-from data.reconstruct_tiling_dict import reconstruct_from_patches
-
-# Add these imports at the top
 from osgeo import gdal
 import tempfile
-
-# Add this import at the top of your file
 from evaluation.p_eval import corr_comp_qual, clDice
-import cv2
 
 def test(model, win_size, args):
     input = args.input_map_path
@@ -415,7 +407,7 @@ def parse_args():
                         help='whether use gpu to train network')
     parser.add_argument('-g', '--gpu', type=str, default='0',
                         help='the gpu id to train net')
-    parser.add_argument('-m', '--model', type=str, default='../training_info/BOTH/unet_done/jpg_2025-10-02_06-31-13_lr_0.0001_train_unet_bs_4_bce__aug_ctr+aff/params/topo_best_val_99.pth',
+    parser.add_argument('-m', '--model', type=str, default='models/base.pth',
                         help='the model to test')
 
     parser.add_argument('--channels', type=int, default=3,
@@ -423,9 +415,9 @@ def parse_args():
     parser.add_argument('--classes', type=int, default=1,
                         help='number of classes in the output')
 
-    parser.add_argument('--input_map_path', type=str, default='dataset/TM/Test/TM25_jpg50.tif', #dataset/Vltava_SMO/raster_hard_test2.jpg',#'dataset/SMO5_inference/SMO5_1980.tif',#
+    parser.add_argument('--input_map_path', type=str, default='dataset/TM/Test/TM25_sample.tif',
                         help='Input map image.')
-    parser.add_argument('--input_mask_path', type=str, default=None, #'dataset/Test3_mask.tif',#'dataset/Vltava_SMO/mask_1980.tif',#
+    parser.add_argument('--input_mask_path', type=str, default=None,
                         help='Input map image.')
     
     parser.add_argument('--invert_label_map', action='store_true', default=False,

@@ -1,8 +1,6 @@
 import sys
 import numpy as np
-import setuptools
-from distutils.core import setup
-from distutils.extension import Extension
+from setuptools import setup, Extension, find_packages
 
 package_name = 'MBD'
 module_name  = 'MBD'
@@ -35,10 +33,11 @@ setup(
     author_email = 'vungocminh@gmail.com',
     description  = description,
     # long_description = long_description,
-    packages = setuptools.find_packages(),
+    packages = find_packages(),
     ext_modules = [module1],
     python_requires = '>=3.6',
 )
 
-# to build, run python setup.py build or python setup.py build_ext --inplace
-# to install, run python setup.py install
+# Modern installation:
+# pip install .              # Install the package
+# pip install -e .           # Install in editable/development mode

@@ -128,7 +128,7 @@ def train(args):
 
     # Change it to adam optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=args.base_lr, weight_decay=args.weight_decay)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=5, min_lr=1e-5, verbose=True)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=5, min_lr=1e-5)
 
     if args.cuda:
         model.cuda()
@@ -318,13 +318,13 @@ def parse_args():
 
     parser = argparse.ArgumentParser(
         description='Train leakage-loss for different args')
-    parser.add_argument('-p', '--pretrain', type=path_exists, default='../training_info/BOTH/unet/2026-01-12_20-01-58_lr_0.0001_train_unet_bs_4_bce__aug_ctr+aff/params/epoch_14.pth',
+    parser.add_argument('-p', '--pretrain', type=path_exists, default=None,
         help='init net from pretrained model default is None')
     parser.add_argument('--model_type', type=str, default='unet',
                         help='The type of the model')
     parser.add_argument('--main_loss_type', type=str, default='bce',
                         help='The type of the model')
-    parser.add_argument('--topo_loss_type', type=str, default='baloss',
+    parser.add_argument('--topo_loss_type', type=str, default=None,
                         help='The type of the model')
     parser.add_argument('--alpha', type=float, default=100,
                         help='the coefficient for topo loss')
@@ -356,13 +356,13 @@ def parse_args():
                         help='number of channels for unet')
     parser.add_argument('--classes', type=int, default=1,
                         help='number of classes in the output')
-    parser.add_argument('--res_dir', type=str, default='../training_info/',
+    parser.add_argument('--res_dir', type=str, default='training_info/',
                         help='the dir to store result')
     parser.add_argument('--w_size', type=int, default=256,
                         help='Patch size for training')
-    parser.add_argument('--train_data_dir', type=str, default='dataset/TM/Train_jpg30/',
+    parser.add_argument('--train_data_dir', type=str, default='dataset/TM/Train',
                         help='Directory containing training .tif files and corresponding _GT.tif files')
-    parser.add_argument('--val_data_dir', type=str, default='dataset/TM/Val_jpg30/',
+    parser.add_argument('--val_data_dir', type=str, default='dataset/TM/Val',
                         help='Directory containing validation .tif files and corresponding _GT.tif files')
     
     return parser.parse_args()

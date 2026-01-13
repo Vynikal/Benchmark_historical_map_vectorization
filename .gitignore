@@ -4,9 +4,7 @@ pretrain_weight/*
 evaluation/all_eval/__pycache__
 
 demo/*
-dataset/image_gt/*
 
-dataset/*
 inference/verniquet_eval.sh
 
 model/unet_nl.py
@@ -14,7 +12,6 @@ model/unet_nl.py
 training/train_connet.py
 
 loss/MBD_BAL/*
-loss/path_loss/*
 *.pyc
 .vscode/launch.json
 */PKG-INFO
