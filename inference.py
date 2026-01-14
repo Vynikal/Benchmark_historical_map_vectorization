@@ -91,7 +91,8 @@ def main():
         model = UNET(n_channels=args.channels, n_classes=args.classes)
         model.load_state_dict(torch.load('%s' % (args.model)))
         print('Load model {}'.format(args.model))
-        win_size = 500
+    
+    win_size = args.w_size
 
     # Process tiles and get memory-mapped results
     patches_results, test_img_pos = test(model, win_size, args)
@@ -106,7 +107,7 @@ def main():
 
     # Set up output directories
     name = str(args.input_map_path).split('/')[-1].split('.')[0]
-    output_dir = os.path.join(str(Path(args.model).parent), name)
+    output_dir = os.path.join(str(Path(args.input_map_path).parent.parent), 'inferred_output', name)
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
@@ -128,7 +129,7 @@ def main():
     )
 
     # Initialize these variables before any conditional blocks
-    base_filename = f"{str(args.model_type)}_test"
+    base_filename = f"{str(args.model_type)}_{str(args.model).split('/')[-1].split('.')[0]}_test"
     tile_save_image_path = os.path.join(output_dir, f"{base_filename}.tif")
     mask_applied = False
 
@@ -246,7 +247,7 @@ def main():
             'Balanced_Accuracy': balanced_acc*100,
             'Masked': args.input_mask_path is not None
         }
-        pd.DataFrame([eval_results]).to_csv(os.path.join(output_dir, 'edge_evaluation.csv'), index=False)
+        pd.DataFrame([eval_results]).to_csv(os.path.join(output_dir, f'{base_filename}_edge_evaluation.csv'), index=False)
 
         # After calculating the metrics but before saving the reconstructed image:
         if args.gt_edge_path and os.path.exists(args.gt_edge_path):
@@ -407,18 +408,11 @@ def parse_args():
                         help='whether use gpu to train network')
     parser.add_argument('-g', '--gpu', type=str, default='0',
                         help='the gpu id to train net')
-    parser.add_argument('-m', '--model', type=str, default='models/base.pth',
-                        help='the model to test')
 
     parser.add_argument('--channels', type=int, default=3,
                         help='number of channels for unet')
     parser.add_argument('--classes', type=int, default=1,
                         help='number of classes in the output')
-
-    parser.add_argument('--input_map_path', type=str, default='dataset/TM/Test/TM25_sample.tif',
-                        help='Input map image.')
-    parser.add_argument('--input_mask_path', type=str, default=None,
-                        help='Input map image.')
     
     parser.add_argument('--invert_label_map', action='store_true', default=False,
                         help='use negative pixels')
@@ -427,7 +421,15 @@ def parse_args():
     parser.add_argument('--threshold', action='store_true', default=0.5,
                         help='CC thresholding')
     
-    parser.add_argument('--gt_edge_path', type=str, default=None,
+    parser.add_argument('--w_size', type=int, default=512,
+                        help='Patch size for inference')
+    parser.add_argument('-m', '--model', type=str, default='trained_models/quality/jpg30.pth',
+                        help='the model to test')
+    parser.add_argument('--input_map_path', type=str, default='dataset/Test/TM10_jpg30.tif',
+                        help='Input map image.')
+    parser.add_argument('--input_mask_path', type=str, default=None,
+                        help='Input map image.')
+    parser.add_argument('--gt_edge_path', type=str, default='dataset/Test_GT/TM10_lowres_GT.tif',
                         help='Path to ground truth edge ZZmap for evaluation')
     
     return parser.parse_args()

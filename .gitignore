@@ -9,7 +9,8 @@ inference/verniquet_eval.sh
 
 model/unet_nl.py
 
-training/train_connet.py
+dataset/inferred_output
+training_info
 
 loss/MBD_BAL/*
 *.pyc
