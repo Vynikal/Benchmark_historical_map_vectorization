@@ -52,13 +52,15 @@ def reconstruct_from_patches(patches_images, patch_size, step_size, image_size_2
         patch_positions: List of (row,col) positions for each patch. If None, assumes sequential filling
         batch_size: Number of patches to process at once
     '''
+    import math
+    
     # Get original dimensions
     out_h = image_size_2d[0]
     out_w = image_size_2d[1]
     has_channels = len(patches_images.shape) > 3 and patches_images.shape[3] > 1
     out_channels = 3 if has_channels else 1
     
-    # Calculate dimensions needed for the patches
+    # Calculate dimensions needed for the patches (same padding as tiling)
     i_h = out_h + patch_size
     i_w = out_w + patch_size
     p_h = p_w = patch_size
@@ -72,9 +74,10 @@ def reconstruct_from_patches(patches_images, patch_size, step_size, image_size_2
     out_shape = (out_h, out_w, out_channels) if has_channels else (out_h, out_w)
     result = np.memmap(result_filename, dtype=image_dtype, mode='w+', shape=out_shape)
     
-    # Calculate number of rows and columns in patch grid
-    numrows = (i_h)//step_size-1
-    numcols = (i_w)//step_size-1
+    # Calculate number of rows and columns in patch grid - MUST match tiling logic
+    # Use ceiling division to ensure we can handle all tiles from the tiling function
+    numrows = math.ceil((i_h - patch_size) / step_size) + 1
+    numcols = math.ceil((i_w - patch_size) / step_size) + 1
     
     # If no positions provided, create position mapping
     if patch_positions is None:
@@ -99,24 +102,31 @@ def reconstruct_from_patches(patches_images, patch_size, step_size, image_size_2
             # Extract inner region of patch (non-overlapping part)
             inner_patch = patch[patch_offset:-patch_offset, patch_offset:-patch_offset]
             
+            # Get the actual size of inner_patch
+            actual_patch_h, actual_patch_w = inner_patch.shape[:2]
+            
             # Calculate destination position in final array
             # Account for the step_size//2 offset by subtracting it from the position
             dest_y = row * step_size - step_size//2
             dest_x = col * step_size - step_size//2
             
+            # Skip patches that are completely outside the output bounds
+            if dest_y + actual_patch_h <= 0 or dest_y >= out_h or dest_x + actual_patch_w <= 0 or dest_x >= out_w:
+                continue
+            
             # Ensure destination is within bounds of final array
-            if dest_y < 0 or dest_x < 0 or dest_y + patch_inner > out_h or dest_x + patch_inner > out_w:
-                # Calculate valid region (intersection with final array bounds)
-                src_y_start = max(0, -dest_y)
-                src_x_start = max(0, -dest_x)
-                src_y_end = min(patch_inner, out_h - dest_y)
-                src_x_end = min(patch_inner, out_w - dest_x)
-                
-                # Calculate valid destination region
+            if dest_y < 0 or dest_x < 0 or dest_y + actual_patch_h > out_h or dest_x + actual_patch_w > out_w:
+                # Calculate the overlap region in output coordinates
                 dst_y_start = max(0, dest_y)
                 dst_x_start = max(0, dest_x)
-                dst_y_end = min(out_h, dest_y + patch_inner)
-                dst_x_end = min(out_w, dest_x + patch_inner)
+                dst_y_end = min(out_h, dest_y + actual_patch_h)
+                dst_x_end = min(out_w, dest_x + actual_patch_w)
+                
+                # Calculate corresponding region in patch coordinates (same size as dst)
+                src_y_start = dst_y_start - dest_y
+                src_x_start = dst_x_start - dest_x
+                src_y_end = src_y_start + (dst_y_end - dst_y_start)
+                src_x_end = src_x_start + (dst_x_end - dst_x_start)
                 
                 # Copy valid part of patch to result
                 if has_channels:
@@ -128,9 +138,9 @@ def reconstruct_from_patches(patches_images, patch_size, step_size, image_size_2
             else:
                 # Normal case - patch fits entirely within bounds
                 if has_channels:
-                    result[dest_y:dest_y+patch_inner, dest_x:dest_x+patch_inner, :] = inner_patch
+                    result[dest_y:dest_y+actual_patch_h, dest_x:dest_x+actual_patch_w, :] = inner_patch
                 else:
-                    result[dest_y:dest_y+patch_inner, dest_x:dest_x+patch_inner] = inner_patch
+                    result[dest_y:dest_y+actual_patch_h, dest_x:dest_x+actual_patch_w] = inner_patch
         
         # Force write to disk after each batch
         result.flush()

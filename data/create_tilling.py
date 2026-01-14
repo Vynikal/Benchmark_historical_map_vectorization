@@ -64,6 +64,7 @@ def generate_tiling_gdal(image_path, w_size, mask_path=None, batch_size=1000, ma
     import gc
     import numpy as np
     import psutil
+    import math
     
     gdal.UseExceptions()
     win_size = w_size
@@ -122,9 +123,10 @@ def generate_tiling_gdal(image_path, w_size, mask_path=None, batch_size=1000, ma
     padded_width = img_width + 2*pad_px
     padded_height = img_height + 2*pad_px
     
-    # Calculate number of tiles - same logic as view_as_windows with step=pad_px
-    num_rows = (padded_height - win_size) // pad_px + 1
-    num_cols = (padded_width - win_size) // pad_px + 1
+    # Calculate number of tiles - use ceiling division to ensure full coverage
+    # This ensures the last tiles extend far enough to cover right/bottom edges
+    num_rows = math.ceil((padded_height - win_size) / pad_px) + 1
+    num_cols = math.ceil((padded_width - win_size) / pad_px) + 1
     
     # Calculate total number of tiles and estimate memory requirements
     total_tiles = num_rows * num_cols
