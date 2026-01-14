@@ -346,18 +346,19 @@ def parse_args():
                         help='the weight_decay of net')
     parser.add_argument('-r', '--resume', type=str, default=None,
                         help='whether resume from some, default is None')
-    parser.add_argument('--epochs', type=int, default=100,
-                        help='Epoch to train network, default is 100')
     parser.add_argument('--dilation', type=int, default=False,
                         help='Dilate the ground truth by 1px')
-    parser.add_argument('--batch-size', type=int, default=4,
-                        help='batch size of one iteration, default 4')
     parser.add_argument('--channels', type=int, default=3,
                         help='number of channels for unet')
     parser.add_argument('--classes', type=int, default=1,
                         help='number of classes in the output')
     parser.add_argument('--res_dir', type=str, default='training_info/',
                         help='the dir to store result')
+    
+    parser.add_argument('--epochs', type=int, default=100,
+                        help='Epoch to train network, default is 100')
+    parser.add_argument('--batch-size', type=int, default=4,
+                        help='batch size of one iteration, default 4')
     parser.add_argument('--w_size', type=int, default=256,
                         help='Patch size for training')
     parser.add_argument('--train_data_dir', type=str, default='dataset/TM/Train',

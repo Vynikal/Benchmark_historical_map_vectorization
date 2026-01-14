@@ -421,16 +421,16 @@ def parse_args():
     parser.add_argument('--threshold', action='store_true', default=0.5,
                         help='CC thresholding')
     
-    parser.add_argument('--w_size', type=int, default=512,
-                        help='Patch size for inference')
-    parser.add_argument('-m', '--model', type=str, default='trained_models/quality/jpg30.pth',
+    parser.add_argument('-m', '--model', type=str, default='trained_models/quality/base.pth',
                         help='the model to test')
-    parser.add_argument('--input_map_path', type=str, default='dataset/Test/TM10_jpg30.tif',
+    parser.add_argument('--input_map_path', type=str, default='dataset/Test/TM25_base.tif',
                         help='Input map image.')
     parser.add_argument('--input_mask_path', type=str, default=None,
-                        help='Input map image.')
-    parser.add_argument('--gt_edge_path', type=str, default='dataset/Test_GT/TM10_lowres_GT.tif',
-                        help='Path to ground truth edge ZZmap for evaluation')
+                        help='Input mask image.')
+    parser.add_argument('--w_size', type=int, default=64,
+                        help='Patch size for inference')
+    parser.add_argument('--gt_edge_path', type=str, default='dataset/Test_GT/TM25_lowres_GT.tif',
+                        help='Path to ground truth edge map for evaluation (if available)')
     
     return parser.parse_args()
 
