@@ -49,13 +49,19 @@ This repository contains:
  ```
 train.py and inference.py can be launched with parameters and flags described at the bottom of respective files.
 
+## Running the code
+
 **Training** 
+
 To train a contour vectorization model, create subfolders `/Train` and `/Val` in `/dataset`. Next, put there map images with .tif extension, the smart data loader can deal with multiple input maps. Along with them, include ground truth maps with the same name and `_GT.tif` suffix, and optionally also binary mask with `_mask.tif` suffix. The two (three) raster files need to have the same resolution. Edit `train.py` parameters to your liking and run it.
+
 ![Map and ground truth excerpt](dataset/visual1.png)
 
 **Inference** 
+
 To infer a model on an unseen map to create edge probability map (EPM), run `inference.py` with desired parameters, notably the path to the trained model. If pointed to the GT raster, the program also runs statistics (precision/recall/f1).
 To vectorize the EPM, either use the pipeline from second paper included in `/trained_models/vectorization_models.atbx` in ArcGIS, or implement it elsewhere.
 
 **Evaluation** 
+
 To evaluate the vectorized .shp, run `/evaluation/evaluate_shp.py` with the GT .shp and set tolerance. This calculates overlay statistics and topological errors to properly compare performance of various models.
